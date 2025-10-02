@@ -2,15 +2,22 @@
   "name": "jaxray",
   "version": "1.0.0",
   "description": "A javascript implementation similar to xarray",
-  "main": "index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc",
+    "test": "node --test dist/*.test.js",
+    "prepublishOnly": "npm run build"
   },
-  "keywords": [],
+  "keywords": ["xarray", "multidimensional", "array", "dataset", "dataarray", "scientific", "data"],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^24.6.2",
     "typescript": "^5.9.3"
-  }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
 }
