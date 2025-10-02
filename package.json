@@ -6,15 +6,24 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "node --test dist/*.test.js",
+    "test": "vitest run",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["xarray", "multidimensional", "array", "dataset", "dataarray", "scientific", "data"],
+  "keywords": [
+    "xarray",
+    "multidimensional",
+    "array",
+    "dataset",
+    "dataarray",
+    "scientific",
+    "data"
+  ],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^24.6.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
   },
   "files": [
     "dist",

@@ -2,20 +2,19 @@
  * Tests for DataArray
  */
 
-import { strict as assert } from 'assert';
-import { test, describe } from 'node:test';
-import { DataArray } from './DataArray';
+import { describe, test, expect } from 'vitest';
+import { DataArray } from '../src/DataArray';
 
 describe('DataArray', () => {
   test('should create a simple 1D DataArray', () => {
     const data = [1, 2, 3, 4, 5];
     const da = new DataArray(data, { dims: ['x'] });
 
-    assert.deepEqual(da.data, data);
-    assert.deepEqual(da.dims, ['x']);
-    assert.deepEqual(da.shape, [5]);
-    assert.equal(da.ndim, 1);
-    assert.equal(da.size, 5);
+    expect(da.data).toEqual(data);
+    expect(da.dims).toEqual(['x']);
+    expect(da.shape).toEqual([5]);
+    expect(da.ndim).toBe(1);
+    expect(da.size).toBe(5);
   });
 
   test('should create a 2D DataArray', () => {
@@ -27,11 +26,11 @@ describe('DataArray', () => {
       dims: ['y', 'x']
     });
 
-    assert.deepEqual(da.data, data);
-    assert.deepEqual(da.dims, ['y', 'x']);
-    assert.deepEqual(da.shape, [2, 3]);
-    assert.equal(da.ndim, 2);
-    assert.equal(da.size, 6);
+    expect(da.data).toEqual(data);
+    expect(da.dims).toEqual(['y', 'x']);
+    expect(da.shape).toEqual([2, 3]);
+    expect(da.ndim).toBe(2);
+    expect(da.size).toBe(6);
   });
 
   test('should create DataArray with custom coordinates', () => {
@@ -43,14 +42,14 @@ describe('DataArray', () => {
       }
     });
 
-    assert.deepEqual(da.coords['time'], ['2021-01-01', '2021-01-02', '2021-01-03']);
+    expect(da.coords['time']).toEqual(['2021-01-01', '2021-01-02', '2021-01-03']);
   });
 
   test('should auto-generate dimension names if not provided', () => {
     const data = [[1, 2], [3, 4]];
     const da = new DataArray(data);
 
-    assert.deepEqual(da.dims, ['dim_0', 'dim_1']);
+    expect(da.dims).toEqual(['dim_0', 'dim_1']);
   });
 
   test('should select data by label using sel()', () => {
@@ -63,7 +62,7 @@ describe('DataArray', () => {
     });
 
     const selected = da.sel({ x: 30 });
-    assert.equal(selected.data, 3);
+    expect(selected.data).toBe(3);
   });
 
   test('should select multiple values using sel()', () => {
@@ -76,7 +75,7 @@ describe('DataArray', () => {
     });
 
     const selected = da.sel({ x: [10, 30, 50] });
-    assert.deepEqual(selected.data, [1, 3, 5]);
+    expect(selected.data).toEqual([1, 3, 5]);
   });
 
   test('should slice data using sel()', () => {
@@ -89,7 +88,7 @@ describe('DataArray', () => {
     });
 
     const selected = da.sel({ x: { start: 20, stop: 40 } });
-    assert.deepEqual(selected.data, [2, 3, 4]);
+    expect(selected.data).toEqual([2, 3, 4]);
   });
 
   test('should select by integer position using isel()', () => {
@@ -97,7 +96,7 @@ describe('DataArray', () => {
     const da = new DataArray(data, { dims: ['x'] });
 
     const selected = da.isel({ x: 2 });
-    assert.equal(selected.data, 3);
+    expect(selected.data).toBe(3);
   });
 
   test('should compute sum along dimension', () => {
@@ -110,9 +109,11 @@ describe('DataArray', () => {
     });
 
     const sumX = da.sum('x');
-    assert.ok(sumX instanceof DataArray);
-    assert.deepEqual(sumX.data, [6, 15]);
-    assert.deepEqual(sumX.dims, ['y']);
+    expect(sumX).toBeInstanceOf(DataArray);
+    if (sumX instanceof DataArray) {
+      expect(sumX.data).toEqual([6, 15]);
+      expect(sumX.dims).toEqual(['y']);
+    }
   });
 
   test('should compute total sum', () => {
@@ -120,7 +121,7 @@ describe('DataArray', () => {
     const da = new DataArray(data, { dims: ['x'] });
 
     const total = da.sum();
-    assert.equal(total, 15);
+    expect(total).toBe(15);
   });
 
   test('should compute mean along dimension', () => {
@@ -133,9 +134,11 @@ describe('DataArray', () => {
     });
 
     const meanX = da.mean('x');
-    assert.ok(meanX instanceof DataArray);
-    assert.deepEqual(meanX.data, [2, 5]);
-    assert.deepEqual(meanX.dims, ['y']);
+    expect(meanX).toBeInstanceOf(DataArray);
+    if (meanX instanceof DataArray) {
+      expect(meanX.data).toEqual([2, 5]);
+      expect(meanX.dims).toEqual(['y']);
+    }
   });
 
   test('should compute total mean', () => {
@@ -143,7 +146,7 @@ describe('DataArray', () => {
     const da = new DataArray(data, { dims: ['x'] });
 
     const mean = da.mean();
-    assert.equal(mean, 3);
+    expect(mean).toBe(3);
   });
 
   test('should handle attributes', () => {
@@ -154,7 +157,7 @@ describe('DataArray', () => {
       attrs
     });
 
-    assert.deepEqual(da.attrs, attrs);
+    expect(da.attrs).toEqual(attrs);
   });
 
   test('should handle name', () => {
@@ -164,7 +167,7 @@ describe('DataArray', () => {
       name: 'temperature'
     });
 
-    assert.equal(da.name, 'temperature');
+    expect(da.name).toBe('temperature');
   });
 
   test('should convert to object', () => {
@@ -177,27 +180,27 @@ describe('DataArray', () => {
     });
 
     const obj = da.toObject();
-    assert.deepEqual(obj.data, data);
-    assert.deepEqual(obj.dims, ['x']);
-    assert.deepEqual(obj.coords, { x: [0, 1, 2] });
-    assert.deepEqual(obj.attrs, { units: 'meters' });
-    assert.equal(obj.name, 'test');
+    expect(obj.data).toEqual(data);
+    expect(obj.dims).toEqual(['x']);
+    expect(obj.coords).toEqual({ x: [0, 1, 2] });
+    expect(obj.attrs).toEqual({ units: 'meters' });
+    expect(obj.name).toBe('test');
   });
 
   test('should throw error for mismatched dimensions and data', () => {
     const data = [1, 2, 3];
-    assert.throws(() => {
+    expect(() => {
       new DataArray(data, { dims: ['x', 'y'] });
-    });
+    }).toThrow();
   });
 
   test('should throw error for mismatched coordinate length', () => {
     const data = [1, 2, 3];
-    assert.throws(() => {
+    expect(() => {
       new DataArray(data, {
         dims: ['x'],
         coords: { x: [0, 1] } // Wrong length
       });
-    });
+    }).toThrow();
   });
 });

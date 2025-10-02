@@ -2,17 +2,16 @@
  * Tests for Dataset
  */
 
-import { strict as assert } from 'assert';
-import { test, describe } from 'node:test';
-import { DataArray } from './DataArray';
-import { Dataset } from './Dataset';
+import { describe, test, expect } from 'vitest';
+import { DataArray } from '../src/DataArray';
+import { Dataset } from '../src/Dataset';
 
 describe('Dataset', () => {
   test('should create an empty dataset', () => {
     const ds = new Dataset();
 
-    assert.deepEqual(ds.dataVars, []);
-    assert.deepEqual(ds.dims, []);
+    expect(ds.dataVars).toEqual([]);
+    expect(ds.dims).toEqual([]);
   });
 
   test('should create a dataset with data variables', () => {
@@ -30,8 +29,8 @@ describe('Dataset', () => {
       pressure: pressure
     });
 
-    assert.deepEqual(ds.dataVars, ['temperature', 'pressure']);
-    assert.deepEqual(ds.dims, ['x']);
+    expect(ds.dataVars).toEqual(['temperature', 'pressure']);
+    expect(ds.dims).toEqual(['x']);
   });
 
   test('should get a data variable', () => {
@@ -39,8 +38,8 @@ describe('Dataset', () => {
     const ds = new Dataset({ temperature: temp });
 
     const retrieved = ds.getVariable('temperature');
-    assert.ok(retrieved);
-    assert.deepEqual(retrieved.data, [1, 2, 3]);
+    expect(retrieved).toBeTruthy();
+    expect(retrieved?.data).toEqual([1, 2, 3]);
   });
 
   test('should add a data variable', () => {
@@ -49,8 +48,8 @@ describe('Dataset', () => {
 
     ds.addVariable('temperature', temp);
 
-    assert.ok(ds.hasVariable('temperature'));
-    assert.deepEqual(ds.dataVars, ['temperature']);
+    expect(ds.hasVariable('temperature')).toBe(true);
+    expect(ds.dataVars).toEqual(['temperature']);
   });
 
   test('should remove a data variable', () => {
@@ -59,8 +58,8 @@ describe('Dataset', () => {
 
     const removed = ds.removeVariable('temperature');
 
-    assert.equal(removed, true);
-    assert.equal(ds.hasVariable('temperature'), false);
+    expect(removed).toBe(true);
+    expect(ds.hasVariable('temperature')).toBe(false);
   });
 
   test('should get dimension sizes', () => {
@@ -74,8 +73,8 @@ describe('Dataset', () => {
     const ds = new Dataset({ temperature: temp });
 
     const sizes = ds.sizes;
-    assert.equal(sizes.x, 3);
-    assert.equal(sizes.y, 2);
+    expect(sizes.x).toBe(3);
+    expect(sizes.y).toBe(2);
   });
 
   test('should select data using sel()', () => {
@@ -88,8 +87,8 @@ describe('Dataset', () => {
     const selected = ds.sel({ x: 30 });
     const selectedTemp = selected.getVariable('temperature');
 
-    assert.ok(selectedTemp);
-    assert.equal(selectedTemp.data, 3);
+    expect(selectedTemp).toBeTruthy();
+    expect(selectedTemp?.data).toBe(3);
   });
 
   test('should select data using isel()', () => {
@@ -99,8 +98,8 @@ describe('Dataset', () => {
     const selected = ds.isel({ x: 2 });
     const selectedTemp = selected.getVariable('temperature');
 
-    assert.ok(selectedTemp);
-    assert.equal(selectedTemp.data, 3);
+    expect(selectedTemp).toBeTruthy();
+    expect(selectedTemp?.data).toBe(3);
   });
 
   test('should map function over all variables', () => {
@@ -116,10 +115,10 @@ describe('Dataset', () => {
     const doubledTemp = doubled.getVariable('temperature');
     const doubledPressure = doubled.getVariable('pressure');
 
-    assert.ok(doubledTemp);
-    assert.ok(doubledPressure);
-    assert.deepEqual(doubledTemp.data, [2, 4, 6]);
-    assert.deepEqual(doubledPressure.data, [200, 400, 600]);
+    expect(doubledTemp).toBeTruthy();
+    expect(doubledPressure).toBeTruthy();
+    expect(doubledTemp?.data).toEqual([2, 4, 6]);
+    expect(doubledPressure?.data).toEqual([200, 400, 600]);
   });
 
   test('should merge two datasets', () => {
@@ -131,7 +130,7 @@ describe('Dataset', () => {
 
     const merged = ds1.merge(ds2);
 
-    assert.deepEqual(merged.dataVars.sort(), ['pressure', 'temperature']);
+    expect(merged.dataVars.sort()).toEqual(['pressure', 'temperature']);
   });
 
   test('should throw error when merging datasets with duplicate variables', () => {
@@ -141,16 +140,16 @@ describe('Dataset', () => {
     const ds1 = new Dataset({ temperature: temp1 });
     const ds2 = new Dataset({ temperature: temp2 });
 
-    assert.throws(() => {
+    expect(() => {
       ds1.merge(ds2);
-    });
+    }).toThrow();
   });
 
   test('should handle attributes', () => {
     const attrs = { description: 'Test dataset', version: '1.0' };
     const ds = new Dataset({}, { attrs });
 
-    assert.deepEqual(ds.attrs, attrs);
+    expect(ds.attrs).toEqual(attrs);
   });
 
   test('should convert to object', () => {
@@ -162,9 +161,9 @@ describe('Dataset', () => {
 
     const obj = ds.toObject();
 
-    assert.ok(obj.dataVars);
-    assert.ok(obj.dataVars.temperature);
-    assert.deepEqual(obj.attrs, { description: 'Test' });
+    expect(obj.dataVars).toBeTruthy();
+    expect(obj.dataVars?.temperature).toBeTruthy();
+    expect(obj.attrs).toEqual({ description: 'Test' });
   });
 
   test('should handle multiple dimensions', () => {
@@ -182,7 +181,7 @@ describe('Dataset', () => {
       pressure: pressure
     });
 
-    assert.deepEqual(ds.dims.sort(), ['x', 'y']);
+    expect(ds.dims.sort()).toEqual(['x', 'y']);
   });
 
   test('should throw error for inconsistent dimension sizes', () => {
@@ -191,8 +190,8 @@ describe('Dataset', () => {
 
     const ds = new Dataset({ temperature: temp1 });
 
-    assert.throws(() => {
+    expect(() => {
       ds.addVariable('pressure', temp2);
-    });
+    }).toThrow();
   });
 });
