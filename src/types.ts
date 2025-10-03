@@ -44,6 +44,8 @@ export interface DataArrayOptions {
   coords?: Coordinates;
   attrs?: Attributes;
   name?: string;
+  lazy?: boolean;
+  virtualShape?: number[];
 }
 
 /**
@@ -52,6 +54,7 @@ export interface DataArrayOptions {
 export interface DatasetOptions {
   coords?: Coordinates;
   attrs?: Attributes;
+  coordAttrs?: { [coordName: string]: Attributes };
 }
 
 /**

@@ -9,14 +9,19 @@ import {
   Attributes,
   DatasetOptions,
   Selection,
-  DimensionName
+  DimensionName,
+  CoordinateValue,
+  DataValue
 } from './types';
 import { deepClone } from './utils';
+import { formatCoordinateValue } from './cf-time';
+import { ZarrBackend } from './backends/zarr';
 
 export class Dataset {
   private _dataVars: Map<string, DataArray>;
   private _coords: Coordinates;
   private _attrs: Attributes;
+  private _coordAttrs: { [coordName: string]: Attributes };
 
   constructor(
     dataVars: { [name: string]: DataArray } = {},
@@ -25,6 +30,7 @@ export class Dataset {
     this._dataVars = new Map();
     this._attrs = options.attrs || {};
     this._coords = options.coords || {};
+    this._coordAttrs = options.coordAttrs || {};
 
     // Add data variables
     for (const [name, dataArray] of Object.entries(dataVars)) {
@@ -153,7 +159,7 @@ export class Dataset {
   /**
    * Select data by coordinate labels
    */
-  sel(selection: Selection): Dataset {
+  async sel(selection: Selection): Promise<Dataset> {
     const newDataVars: { [name: string]: DataArray } = {};
 
     for (const [name, dataArray] of this._dataVars.entries()) {
@@ -166,7 +172,7 @@ export class Dataset {
       }
 
       if (Object.keys(relevantSelection).length > 0) {
-        newDataVars[name] = dataArray.sel(relevantSelection);
+        newDataVars[name] = await dataArray.sel(relevantSelection);
       } else {
         newDataVars[name] = dataArray;
       }
@@ -195,7 +201,8 @@ export class Dataset {
 
     return new Dataset(newDataVars, {
       coords: newCoords,
-      attrs: this._attrs
+      attrs: this._attrs,
+      coordAttrs: this._coordAttrs
     });
   }
 
@@ -221,7 +228,8 @@ export class Dataset {
     }
 
     return new Dataset(newDataVars, {
-      attrs: this._attrs
+      attrs: this._attrs,
+      coordAttrs: this._coordAttrs
     });
   }
 
@@ -237,7 +245,8 @@ export class Dataset {
 
     return new Dataset(newDataVars, {
       coords: this._coords,
-      attrs: this._attrs
+      attrs: this._attrs,
+      coordAttrs: this._coordAttrs
     });
   }
 
@@ -266,9 +275,13 @@ export class Dataset {
     // Merge attributes
     const newAttrs: Attributes = { ...this._attrs, ...other._attrs };
 
+    // Merge coordinate attributes
+    const newCoordAttrs = { ...this._coordAttrs, ...other._coordAttrs };
+
     return new Dataset(newDataVars, {
       coords: newCoords,
-      attrs: newAttrs
+      attrs: newAttrs,
+      coordAttrs: newCoordAttrs
     });
   }
 
@@ -299,11 +312,165 @@ export class Dataset {
   }
 
   /**
-   * Access a variable using bracket notation (for convenience)
+   * String representation of the Dataset
+   * Works in both Node.js and browser environments
    */
-  [Symbol.for('nodejs.util.inspect.custom')](): string {
-    const vars = Array.from(this._dataVars.keys()).join(', ');
-    const dims = this.dims.join(', ');
-    return `Dataset { variables: [${vars}], dims: [${dims}] }`;
+  toString(): string {
+    const lines: string[] = [];
+    const sizes = this.sizes;
+
+    // Header with dimensions
+    lines.push('<jaxray.Dataset>');
+
+    // Dimensions section
+    const dimStrs = Object.entries(sizes).map(([dim, size]) => `${dim}: ${size}`);
+    lines.push(`Dimensions:  (${dimStrs.join(', ')})`);
+
+    // Coordinates section
+    const coordKeys = Object.keys(this._coords);
+    if (coordKeys.length > 0) {
+      lines.push('Coordinates:');
+      for (const key of coordKeys) {
+        const coords = this._coords[key];
+        
+        const dataArray = this._dataVars.get(key);
+        console.log(dataArray);
+        console.log(this.dataVars, "HUKHUKHUK")
+        const attrs = this._coordAttrs[key];
+
+        const dtype = dataArray ? this._inferDtype(dataArray) : this._inferDtypeFromCoords(coords);
+        const coordDims = dataArray ? `(${dataArray.dims.join(', ')})` : `(${key})`;
+        const preview = this._formatCoordPreview(coords, attrs);
+        lines.push(`  * ${key.padEnd(12)} ${coordDims.padEnd(20)} ${dtype} ${preview}`);
+      }
+    }
+
+    // Data variables section
+    if (this._dataVars.size > 0) {
+      lines.push('Data variables:');
+      for (const [name, dataArray] of this._dataVars.entries()) {
+        const dims = `(${dataArray.dims.join(', ')})`;
+        const dtype = this._inferDtype(dataArray);
+        lines.push(`    ${name.padEnd(12)} ${dims.padEnd(20)} ${dtype}`);
+      }
+    }
+
+    // Attributes section
+    const attrKeys = Object.keys(this._attrs);
+    if (attrKeys.length > 0) {
+      lines.push(`Attributes:`);
+      for (const key of attrKeys) {
+        const value = this._attrs[key];
+        const valueStr = typeof value === 'string' ? `'${value}'` : String(value);
+        lines.push(`    ${key}:  ${valueStr}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Infer dtype from DataArray
+   */
+  private _inferDtype(dataArray: DataArray): string {
+    const values = dataArray.values;
+    if (!values) return 'object';
+
+    // Flatten the array manually to handle nested arrays
+    const flatData: DataValue[] = [];
+    const flatten = (arr: any): void => {
+      if (Array.isArray(arr)) {
+        for (const item of arr) {
+          flatten(item);
+        }
+      } else {
+        flatData.push(arr);
+      }
+    };
+    flatten(values);
+
+    if (flatData.length === 0) return 'object';
+
+    const firstValue = flatData.find(v => v != null);
+    if (firstValue === undefined) return 'object';
+
+    if (typeof firstValue === 'number') {
+      return Number.isInteger(firstValue) ? 'int64' : 'float64';
+    } else if (typeof firstValue === 'string') {
+      return 'object';
+    } else if (typeof firstValue === 'boolean') {
+      return 'bool';
+    }
+    return 'object';
+  }
+
+  /**
+   * Infer dtype from coordinate values
+   */
+  private _inferDtypeFromCoords(coords: CoordinateValue[]): string {
+    if (coords.length === 0) return 'object';
+
+    const firstValue = coords.find(v => v != null);
+    if (firstValue === undefined) return 'object';
+
+    if (typeof firstValue === 'number') {
+      return Number.isInteger(firstValue) ? 'int64' : 'float64';
+    } else if (typeof firstValue === 'string') {
+      return 'object';
+    }
+    return 'object';
+  }
+
+  /**
+   * Format coordinate preview
+   */
+  private _formatCoordPreview(coords: CoordinateValue[], attrs?: Attributes): string {
+    if (coords.length === 0) return '[]';
+
+    const formatValue = (val: CoordinateValue) => formatCoordinateValue(val, attrs);
+
+    if (coords.length <= 3) {
+      return `[${coords.map(formatValue).join(', ')}]`;
+    }
+    return `[${formatValue(coords[0])}, ${formatValue(coords[1])}, ..., ${formatValue(coords[coords.length - 1])}]`;
+  }
+
+  /**
+   * Custom Node.js inspector (optional, only works in Node.js)
+   */
+  [Symbol.for('nodejs.util.inspect.custom')]?(): string {
+    return this.toString();
+  }
+
+  /**
+   * Open a Zarr store as a Dataset
+   * Similar to xarray.open_zarr() in Python
+   *
+   * @param storeOrCid - The Zarr store to open, or a CID string for IPFS-backed sharded zarr
+   * @param options - Options for opening the store
+   * @returns A Promise that resolves to a Dataset
+   *
+   * @example
+   * ```typescript
+   * // Open from a CID using default IPFS gateway
+   * const ds = await Dataset.open_zarr('bafyr4ibyb6sk2cxpoab2rvbwvmyjjsup42icy5sj6zyh5jhuqc6ntlkuaa');
+   *
+   * // Open from a CID using custom IPFS elements
+   * const ds = await Dataset.open_zarr('bafyr4i...', { ipfsElements: myCustomElements });
+   *
+   * // Open from a CID using a custom gateway
+   * const ds = await Dataset.open_zarr('bafyr4i...', { ipfsGateway: 'https://ipfs-gateway.dclimate.net' });
+   * ```
+   */
+  static async open_zarr(
+    storeOrCid: any,
+    options?: {
+      group?: string;
+      consolidated?: boolean;
+      ipfsElements?: any;
+      ipfsGateway?: string;
+    }
+  ): Promise<Dataset> {
+    return ZarrBackend.open(storeOrCid, options);
   }
 }

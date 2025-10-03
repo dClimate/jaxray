@@ -122,7 +122,7 @@ export function arraysEqual(a: any[], b: any[]): boolean {
   if (a.length !== b.length) {
     return false;
   }
-  
+
   for (let i = 0; i < a.length; i++) {
     if (Array.isArray(a[i]) && Array.isArray(b[i])) {
       if (!arraysEqual(a[i], b[i])) {
@@ -132,6 +132,6 @@ export function arraysEqual(a: any[], b: any[]): boolean {
       return false;
     }
   }
-  
+
   return true;
 }

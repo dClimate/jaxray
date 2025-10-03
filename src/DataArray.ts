@@ -14,6 +14,7 @@ import {
   CoordinateValue
 } from './types';
 import { getShape, flatten, reshape, deepClone } from './utils';
+import { isTimeCoordinate, parseCFTimeUnits } from './cf-time';
 
 export class DataArray {
   private _data: NDArray;
@@ -24,6 +25,23 @@ export class DataArray {
   private _shape: number[];
 
   constructor(data: NDArray, options: DataArrayOptions = {}) {
+    if (options.lazy) {
+      if (!options.virtualShape) throw new Error("lazy DataArray requires virtualShape");
+      this._data = [];                           // no allocation
+      this._shape = [...options.virtualShape];   // real shape
+      this._attrs = options.attrs || {};
+      this._name = options.name;
+      this._dims = options.dims ? [...options.dims] : this._shape.map((_, i) => `dim_${i}`);
+      // coords: do NOT enforce lengths; just store if provided, else generate index arrays by size
+      this._coords = {};
+      if (options.coords) this._coords = deepClone(options.coords);
+      for (let i = 0; i < this._dims.length; i++) {
+        const d = this._dims[i];
+        if (!this._coords[d]) this._coords[d] = Array.from({ length: this._shape[i] }, (_, j) => j);
+      }
+      return;
+    }
+
     this._data = deepClone(data);
     this._shape = getShape(data);
     this._attrs = options.attrs || {};
@@ -134,7 +152,12 @@ export class DataArray {
   /**
    * Select data by coordinate labels
    */
-  sel(selection: Selection): DataArray {
+  async sel(selection: Selection): Promise<DataArray> {
+    // Check if this is a lazy-loaded array with a loader function
+    if (this._attrs._lazy && this._attrs._lazyLoader) {
+      return this._selLazy(selection);
+    }
+
     const newData = this._selectData(selection);
     const newDims: DimensionName[] = [];
     const newCoords: Coordinates = {};
@@ -150,7 +173,7 @@ export class DataArray {
         }
       }
       newDims.push(dim);
-      
+
       if (shapeIndex < newShape.length) {
         // Generate coordinates for the new dimension
         if (selection[dim] !== undefined) {
@@ -296,6 +319,69 @@ export class DataArray {
 
   // Private helper methods
 
+  private async _selLazy(selection: Selection): Promise<DataArray> {
+    const loader = this._attrs._lazyLoader;
+
+    // Build index ranges for each dimension
+    const indexRanges: { [dim: string]: { start: number; stop: number } | number } = {};
+    const newDims: DimensionName[] = [];
+    const newCoords: Coordinates = {};
+
+    for (let i = 0; i < this._dims.length; i++) {
+      const dim = this._dims[i];
+      const sel = selection[dim];
+
+      if (sel === undefined) {
+        // No selection on this dimension - select all
+        indexRanges[dim] = { start: 0, stop: this._shape[i] };
+        newDims.push(dim);
+        newCoords[dim] = this._coords[dim];
+      } else if (typeof sel === 'number' || typeof sel === 'string' || sel instanceof Date) {
+        // Single value - dimension will be dropped
+        const index = this._findCoordinateIndex(dim, sel);
+        indexRanges[dim] = index;
+        // Don't add to newDims or newCoords
+      } else if (Array.isArray(sel)) {
+        // Multiple values selection - convert to range
+        const indices = sel.map(v => this._findCoordinateIndex(dim, v));
+        const minIdx = Math.min(...indices);
+        const maxIdx = Math.max(...indices);
+        indexRanges[dim] = { start: minIdx, stop: maxIdx + 1 };
+        newDims.push(dim);
+        newCoords[dim] = this._coords[dim].slice(minIdx, maxIdx + 1);
+      } else if (typeof sel === 'object' && 'start' in sel) {
+        // Slice selection
+        const { start, stop } = sel;
+        const startIndex = start !== undefined ? this._findCoordinateIndex(dim, start) : 0;
+        const stopIndex = stop !== undefined ? this._findCoordinateIndex(dim, stop) + 1 : this._shape[i];
+        indexRanges[dim] = { start: startIndex, stop: stopIndex };
+        newDims.push(dim);
+        newCoords[dim] = this._coords[dim].slice(startIndex, stopIndex);
+      }
+    }
+
+    // Call the loader function provided by the backend
+    console.log('Calling lazy loader with index ranges:', indexRanges);
+    try {
+      const data = await loader(indexRanges);
+      console.log('Lazy loader returned data:', data);
+
+      if (!data) {
+        throw new Error('Lazy loader returned undefined/null data');
+      }
+
+      return new DataArray(data, {
+        dims: newDims,
+        coords: newCoords,
+        attrs: { ...this._attrs, _lazy: false, _lazyLoader: undefined }, // Mark as no longer lazy
+        name: this._name
+      });
+    } catch (error) {
+      console.error('Error in lazy loader:', error);
+      throw error;
+    }
+  }
+
   private _selectData(selection: Selection): NDArray {
     let result: any = this._data;
     let dimensionsDropped = 0;
@@ -334,12 +420,82 @@ export class DataArray {
 
   private _findCoordinateIndex(dim: DimensionName, value: CoordinateValue): number {
     const coords = this._coords[dim];
+
+    // Handle time coordinate conversion for string dates
+    if (typeof value === 'string') {
+      // Get coordinate-specific attributes
+      // Check _coordAttrs first (Dataset level), then fall back to _attrs
+      const coordAttrs = (this._attrs as any)?._coordAttrs;
+      const dimAttrs = coordAttrs?.[dim] || this._attrs;
+
+      // Check if this looks like a time coordinate and we have a date string
+      if (isTimeCoordinate(dimAttrs)) {
+        const units = dimAttrs?.units as string | undefined;
+
+        if (units) {
+          const parsed = parseCFTimeUnits(units);
+          if (parsed) {
+            // Parse the input date string
+            const inputDate = new Date(value);
+            if (isNaN(inputDate.getTime())) {
+              throw new Error(`Invalid date string: '${value}'`);
+            }
+
+            // Calculate the CF time value from the input date
+            const { unit, referenceDate } = parsed;
+            const timeDiff = inputDate.getTime() - referenceDate.getTime();
+
+            let targetValue: number;
+            switch (unit) {
+              case 'second':
+                targetValue = timeDiff / 1000;
+                break;
+              case 'minute':
+                targetValue = timeDiff / (60 * 1000);
+                break;
+              case 'hour':
+                targetValue = timeDiff / (60 * 60 * 1000);
+                break;
+              case 'day':
+                targetValue = timeDiff / (24 * 60 * 60 * 1000);
+                break;
+              case 'week':
+                targetValue = timeDiff / (7 * 24 * 60 * 60 * 1000);
+                break;
+              case 'month':
+                targetValue = timeDiff / (30 * 24 * 60 * 60 * 1000);
+                break;
+              case 'year':
+                targetValue = timeDiff / (365.25 * 24 * 60 * 60 * 1000);
+                break;
+              default:
+                targetValue = timeDiff / 1000;
+            }
+
+            // Find nearest coordinate value
+            let closestIndex = 0;
+            let minDiff = Math.abs((coords[0] as number) - targetValue);
+
+            for (let i = 1; i < coords.length; i++) {
+              const diff = Math.abs((coords[i] as number) - targetValue);
+              if (diff < minDiff) {
+                minDiff = diff;
+                closestIndex = i;
+              }
+            }
+
+            return closestIndex;
+          }
+        }
+      }
+    }
+
+    // Default exact match
     const index = coords.indexOf(value);
-    
     if (index === -1) {
       throw new Error(`Coordinate value '${value}' not found in dimension '${dim}'`);
     }
-    
+
     return index;
   }
 
