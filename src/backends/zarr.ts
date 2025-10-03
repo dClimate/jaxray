@@ -275,10 +275,6 @@ export class ZarrBackend {
 
       // Create a lazy loader function that the DataArray can call
       const lazyLoader = async (indexRanges: { [dim: string]: { start: number; stop: number } | number }) => {
-        const arrOpen = await zarr.open(store as any, { kind: 'group' });
-        const zarrPath = arr.path;
-
-        console.log(`Lazy loading ${arr.name} from ${zarrPath} with ranges`, indexRanges, "HUTKHTUKTHUK");
         const arrNode = await zarr.open(zarrGroup.resolve(arr.name), { kind: 'array'});
         console.log(arrNode, "ARRNODE");
 
@@ -372,14 +368,6 @@ export class ZarrBackend {
       attrs: datasetAttrs,
       coordAttrs,
     });
-  }
-
-  // Not strictly needed in this approach because zarrita handles decoding,
-  // but leaving it here for API completeness if you want a manual array reader later.
-  private static async readArray(store: ZarrStore, arrayPath: string): Promise<any> {
-    const node = await zarr.open(store as any, { path: arrayPath });
-    const values = await zarr.get(node as any);
-    return values;
   }
 
   private static _reshapeFromFlat(flat: any[], shape: number[]): any {

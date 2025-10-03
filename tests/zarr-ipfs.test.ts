@@ -58,7 +58,6 @@ describe('Dataset.open_zarr with IPFS', () => {
     });
     console.log('Range selected dataset:');
     console.log(rangeSelected);
-    console.log('Range selected data:', rangeSelected.getVariable('2m_temperature').values);
 
     // Check if we got a result
     expect(selected).toBeDefined();

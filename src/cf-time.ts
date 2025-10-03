@@ -18,24 +18,21 @@ export function parseCFTimeUnits(unitsStr: string): { unit: string; referenceDat
   const unit = match[1].toLowerCase().replace(/s$/, ''); // normalize to singular
   const dateStr = match[2].trim();
 
-  // Parse reference date - handle various formats
+  // Parse reference date - handle various formats (always as UTC)
   let referenceDate: Date;
   try {
-    // Clean up the date string
-    const cleanedDateStr = dateStr
-      .replace(/T/, ' ')
-      .replace(/Z$/, '')
-      .replace(/\s+/, ' ')
-      .trim();
-
-    // Try parsing as ISO string first
-    referenceDate = new Date(cleanedDateStr);
-
-    // If invalid, try with just the date part
-    if (isNaN(referenceDate.getTime())) {
-      const datePart = cleanedDateStr.split(' ')[0];
-      referenceDate = new Date(datePart);
+    // Ensure we parse as UTC by adding 'Z' if not present
+    let dateStrUTC = dateStr.trim();
+    if (!dateStrUTC.endsWith('Z') && !dateStrUTC.includes('+') && !dateStrUTC.includes('-', 10)) {
+      // No timezone specified, add Z for UTC
+      if (dateStrUTC.includes('T')) {
+        dateStrUTC = dateStrUTC + 'Z';
+      } else {
+        dateStrUTC = dateStrUTC + 'T00:00:00Z';
+      }
     }
+
+    referenceDate = new Date(dateStrUTC);
 
     if (isNaN(referenceDate.getTime())) {
       return null;

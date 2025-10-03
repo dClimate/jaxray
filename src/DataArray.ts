@@ -364,7 +364,6 @@ export class DataArray {
     console.log('Calling lazy loader with index ranges:', indexRanges);
     try {
       const data = await loader(indexRanges);
-      console.log('Lazy loader returned data:', data);
 
       if (!data) {
         throw new Error('Lazy loader returned undefined/null data');
@@ -435,8 +434,12 @@ export class DataArray {
         if (units) {
           const parsed = parseCFTimeUnits(units);
           if (parsed) {
-            // Parse the input date string
-            const inputDate = new Date(value);
+            // Parse the input date string as UTC
+            let inputDateStr = value;
+            if (!inputDateStr.endsWith('Z') && !inputDateStr.includes('+')) {
+              inputDateStr = inputDateStr + 'Z';
+            }
+            const inputDate = new Date(inputDateStr);
             if (isNaN(inputDate.getTime())) {
               throw new Error(`Invalid date string: '${value}'`);
             }

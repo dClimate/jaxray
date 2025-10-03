@@ -178,24 +178,13 @@ export class Dataset {
       }
     }
 
-    // Update coordinates based on selection
+    // Update coordinates from the selected DataArrays
     const newCoords: Coordinates = {};
-    for (const [dim, coords] of Object.entries(this._coords)) {
-      if (selection[dim] !== undefined) {
-        const sel = selection[dim];
-        if (typeof sel === 'number' || typeof sel === 'string') {
-          // Single value - dimension is dropped
-          continue;
-        } else if (Array.isArray(sel)) {
-          newCoords[dim] = sel;
-        } else if (typeof sel === 'object' && 'start' in sel) {
-          const { start, stop } = sel;
-          const startIndex = start !== undefined ? coords.indexOf(start) : 0;
-          const stopIndex = stop !== undefined ? coords.indexOf(stop) + 1 : coords.length;
-          newCoords[dim] = coords.slice(startIndex, stopIndex);
+    for (const dataArray of Object.values(newDataVars)) {
+      for (const dim of dataArray.dims) {
+        if (!newCoords[dim]) {
+          newCoords[dim] = dataArray.coords[dim];
         }
-      } else {
-        newCoords[dim] = coords;
       }
     }
 
