@@ -11,9 +11,9 @@ describe('ZarrBackend', () => {
     expect(typeof ZarrBackend.open).toBe('function');
   });
 
-  test('should throw error when not implemented', async () => {
-    const mockStore = {};
-    await expect(ZarrBackend.open(mockStore)).rejects.toThrow('not yet implemented');
+  test('should throw error for invalid store', async () => {
+    const mockStore = {} as any;
+    await expect(ZarrBackend.open(mockStore)).rejects.toThrow('unable to discover any metadata keys');
   });
 });
 
@@ -23,15 +23,15 @@ describe('Dataset.open_zarr', () => {
   });
 
   test('should call ZarrBackend.open', async () => {
-    const mockStore = {};
-    // This will throw since it's not implemented yet, but verifies the connection
-    await expect(Dataset.open_zarr(mockStore)).rejects.toThrow('not yet implemented');
+    const mockStore = {} as any;
+    // This will throw since the store is invalid, but verifies the connection
+    await expect(Dataset.open_zarr(mockStore)).rejects.toThrow('unable to discover any metadata keys');
   });
 
   test('should pass options to backend', async () => {
-    const mockStore = {};
+    const mockStore = {} as any;
     const options = { group: 'test', consolidated: true };
 
-    await expect(Dataset.open_zarr(mockStore, options)).rejects.toThrow('not yet implemented');
+    await expect(Dataset.open_zarr(mockStore, options)).rejects.toThrow('unable to discover any metadata keys');
   });
 });
