@@ -93,7 +93,6 @@ export function getAtIndex(data: NDArray, indices: number[]): DataValue {
  */
 export function setAtIndex(data: NDArray, indices: number[], value: DataValue): void {
   let current: any = data;
-  
   for (let i = 0; i < indices.length - 1; i++) {
     if (!Array.isArray(current)) {
       throw new Error('Index out of bounds');
