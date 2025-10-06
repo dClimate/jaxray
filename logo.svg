@@ -57,7 +57,7 @@
   </text>
   
   <!-- By dclimate -->
-  <text x="200" y="355" font-family="'JetBrains Mono', 'Courier New', monospace" font-size="14" font-weight="400" fill="#A5B4FC" text-anchor="middle" letter-spacing="1">
+  <text x="200" y="345" font-family="'JetBrains Mono', 'Courier New', monospace" font-size="24" font-weight="500" fill="#A5B4FC" text-anchor="middle" letter-spacing="1">
     by dclimate
   </text>
 </svg>

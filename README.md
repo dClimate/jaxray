@@ -1,6 +1,5 @@
 <div align="center">
-  <img src="logo.svg" alt="jaxray logo" width="200"/>
-  <h1>jaxray</h1>
+  <img src="logo.svg" alt="jaxray logo" width="300"/>
   <p><strong>Labeled multi-dimensional arrays for JavaScript</strong></p>
 
   [![npm version](https://img.shields.io/npm/v/jaxray?style=flat-square)](https://www.npmjs.com/package/jaxray)
