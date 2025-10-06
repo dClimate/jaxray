@@ -18,15 +18,13 @@ export function createIpfsElements(gatewayUrl = 'http://127.0.0.1:8080') {
 
   const dagCborBlockstore: DagCborBlockstore = {
     async get(cid: string | CID) {
-      const cidParsed = typeof cid === 'string' ? CID.parse(cid) : cid;
-      return await gateway.load(cidParsed as any);
+      return await gateway.load(cid);
     },
   };
 
   const unixfs: UnixfsCat = {
     cat: async function* (cid: string | CID): AsyncIterable<Uint8Array> {
-      const cidParsed = typeof cid === 'string' ? CID.parse(cid) : cid;
-      const data = await gateway.load(cidParsed as any);
+      const data = await gateway.load(cid);
       yield data;
     },
   };

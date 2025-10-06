@@ -222,10 +222,6 @@ export class KuboCAS extends ContentAddressedStore {
     length?: number | null,
     suffix?: number | null
   ): Promise<Uint8Array> {
-    // Accept only CID for KuboCAS like Python
-    if (!(id instanceof CID)) {
-      throw new TypeError("KuboCAS.load expects a CID");
-    }
     const url = this.gatewayBase + String(id);
     const headers: Record<string, string> = {};
 

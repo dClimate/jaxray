@@ -583,32 +583,35 @@ export class Dataset {
    * Open a Zarr store as a Dataset
    * Similar to xarray.open_zarr() in Python
    *
-   * @param storeOrCid - The Zarr store to open, or a CID string for IPFS-backed sharded zarr
+   * @param store - A ZarrStore implementation (e.g., ShardedStore for IPFS, S3Store, LocalStore)
    * @param options - Options for opening the store
    * @returns A Promise that resolves to a Dataset
    *
    * @example
    * ```typescript
-   * // Open from a CID using default IPFS gateway
-   * const ds = await Dataset.open_zarr('bafyr4ibyb6sk2cxpoab2rvbwvmyjjsup42icy5sj6zyh5jhuqc6ntlkuaa');
+   * // IPFS: Create ShardedStore and open
+   * import { ShardedStore, createIpfsElements } from 'jaxray';
+   * const ipfsElements = createIpfsElements('https://ipfs-gateway.dclimate.net');
+   * const store = await ShardedStore.open('bafyr4i...', ipfsElements);
+   * const ds = await Dataset.open_zarr(store);
    *
-   * // Open from a CID using custom IPFS elements
-   * const ds = await Dataset.open_zarr('bafyr4i...', { ipfsElements: myCustomElements });
+   * // Future: S3
+   * const store = new S3Store(bucket, key);
+   * const ds = await Dataset.open_zarr(store);
    *
-   * // Open from a CID using a custom gateway
-   * const ds = await Dataset.open_zarr('bafyr4i...', { ipfsGateway: 'https://ipfs-gateway.dclimate.net' });
+   * // Future: Local filesystem
+   * const store = new LocalStore('/path/to/zarr');
+   * const ds = await Dataset.open_zarr(store);
    * ```
    */
   static async open_zarr(
-    storeOrCid: any,
+    store: any,
     options?: {
       group?: string;
       consolidated?: boolean;
-      ipfsElements?: any;
-      ipfsGateway?: string;
     }
   ): Promise<Dataset> {
-    return ZarrBackend.open(storeOrCid, options);
+    return ZarrBackend.open(store, options);
   }
 
   /**

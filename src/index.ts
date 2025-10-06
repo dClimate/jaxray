@@ -11,5 +11,11 @@ export * from './types';
 export * from './utils';
 export * from './cf-time';
 
+// Backends
+export { ZarrBackend, type ZarrStore } from './backends/zarr';
+export { ShardedStore } from './backends/ipfs/sharded-store';
+export { createIpfsElements } from './backends/ipfs/ipfs-elements';
+export { KuboCAS } from './backends/ipfs/ipfs-gateway';
+
 // Version
 export const VERSION = '1.0.0';

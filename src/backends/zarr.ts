@@ -1,10 +1,7 @@
 // backends/zarr.ts
 import * as zarr from "zarrita";
-import { CID } from "multiformats/cid";
 import { Dataset } from "../Dataset";
 import { DataArray } from "../DataArray";
-import { ShardedStore, IPFSELEMENTS_INTERFACE } from "./sharded-store";
-import { createIpfsElements } from "./ipfs/ipfs-elements";
 import { reshape } from "../utils";
 import { DataValue } from "../types";
 
@@ -30,8 +27,6 @@ export interface ZarrMetadata {
 type OpenOptions = {
   group?: string;
   consolidated?: boolean;
-  ipfsElements?: IPFSELEMENTS_INTERFACE;
-  ipfsGateway?: string;
 };
 
 function lastSegment(path: string): string {
@@ -50,30 +45,11 @@ function dirname(path: string): string {
 export class ZarrBackend {
   /**
    * Open a Zarr store as a Dataset
-   * @param storeOrCid - Either a ZarrStore or a CID string for IPFS-backed sharded zarr
-   * @param options - Options including ipfsElements for custom IPFS providers
+   * @param store - A ZarrStore implementation (e.g., ShardedStore, S3Store, LocalStore)
+   * @param options - Options including group path
    */
-  static async open(storeOrCid: ZarrStore | string, options: OpenOptions = {}): Promise<Dataset> {
-    const { group = "", ipfsElements, ipfsGateway } = options;
-
-    let store: ZarrStore;
-
-    // If it's a string, treat it as a CID and create a ShardedStore
-    if (typeof storeOrCid === 'string') {
-      let cidString: string;
-      try {
-        cidString = CID.parse(String(storeOrCid)).toString();
-      } catch {
-        cidString = String(storeOrCid); // already a cid string
-      }
-
-      // Use provided ipfsElements or create default ones
-      const elements = ipfsElements || createIpfsElements(ipfsGateway);
-
-      store = await ShardedStore.open(cidString, elements);
-    } else {
-      store = storeOrCid;
-    }
+  static async open(store: ZarrStore, options: OpenOptions = {}): Promise<Dataset> {
+    const { group = "" } = options;
 
     // ---- Discover array and group nodes via metadata keys ----
     // Expect zarr v3 "zarr.json" files. Your ShardedStore exposes them via metadata map.

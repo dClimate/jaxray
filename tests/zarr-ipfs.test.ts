@@ -4,15 +4,20 @@
 
 import { describe, test, expect } from 'vitest';
 import { Dataset } from '../src/Dataset';
+import { ShardedStore } from '../src/backends/ipfs/sharded-store';
+import { createIpfsElements } from '../src/backends/ipfs/ipfs-elements';
 
 describe('Dataset.open_zarr with IPFS', () => {
   test.only('should open sharded zarr from IPFS gateway', async () => {
     // This is a real sharded zarr store on dclimate's IPFS gateway
     const cid = 'bafyr4iacuutc5bgmirkfyzn4igi2wys7e42kkn674hx3c4dv4wrgjp2k2u';
 
-    const ds = await Dataset.open_zarr(cid, {
-      ipfsGateway: 'https://ipfs-gateway.dclimate.net',
-    });
+    // Create IPFS elements and sharded store
+    const ipfsElements = createIpfsElements('https://ipfs-gateway.dclimate.net');
+    const store = await ShardedStore.open(cid, ipfsElements);
+
+    // Open as dataset
+    const ds = await Dataset.open_zarr(store);
 
     // Basic checks
     expect(ds).toBeInstanceOf(Dataset);
@@ -57,14 +62,6 @@ describe('Dataset.open_zarr with IPFS', () => {
     expect(selected).toBeDefined();
   }, 30000); // 30 second timeout for network request
 
-  test('should accept CID as string', async () => {
-    const cid = 'bafyr4ibyb6sk2cxpoab2rvbwvmyjjsup42icy5sj6zyh5jhuqc6ntlkuaa';
-
-    // This will fail because we don't have the store implementation yet,
-    // but it tests that the API accepts a string CID
-    await expect(Dataset.open_zarr(cid)).rejects.toThrow();
-  });
-
   test('should accept custom ipfsElements', async () => {
     const cid = 'bafyr4ibyb6sk2cxpoab2rvbwvmyjjsup42icy5sj6zyh5jhuqc6ntlkuaa';
 
@@ -83,10 +80,10 @@ describe('Dataset.open_zarr with IPFS', () => {
       },
     };
 
-    // This will fail during store initialization,
-    // but it tests that the API accepts custom ipfsElements
+    // Create store with custom IPFS elements
+    // This will fail during store initialization because mock elements are incomplete
     await expect(
-      Dataset.open_zarr(cid, { ipfsElements: mockIpfsElements })
+      ShardedStore.open(cid, mockIpfsElements)
     ).rejects.toThrow();
   });
 });
