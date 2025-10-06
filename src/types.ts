@@ -76,3 +76,23 @@ export interface SelectionOptions {
   method?: SelectionMethod;
   tolerance?: number;
 }
+
+/**
+ * Options for streaming selection operations
+ */
+export interface StreamOptions extends SelectionOptions {
+  chunkSize?: number; // Target chunk size in MB (default: 100MB)
+  dimension?: DimensionName; // Dimension to chunk along (default: auto-detect)
+}
+
+/**
+ * Chunk result from streaming operations
+ */
+export interface StreamChunk<T> {
+  data: T;
+  progress: number; // Progress percentage (0-100)
+  bytesProcessed: number;
+  totalBytes: number;
+  chunkIndex: number;
+  totalChunks: number;
+}

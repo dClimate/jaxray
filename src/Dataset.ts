@@ -12,7 +12,9 @@ import {
   DimensionName,
   CoordinateValue,
   DataValue,
-  SelectionOptions
+  SelectionOptions,
+  StreamOptions,
+  StreamChunk
 } from './types';
 import { deepClone } from './utils';
 import { formatCoordinateValue } from './cf-time';
@@ -224,6 +226,102 @@ export class Dataset {
       attrs: this._attrs,
       coordAttrs: this._coordAttrs
     });
+  }
+
+  /**
+   * Stream data selection in chunks (useful for large datasets)
+   * @param selection - Selection specification
+   * @param options - Streaming options including chunk size and dimension
+   * @returns AsyncGenerator yielding Dataset chunks with progress information
+   *
+   * @example
+   * ```typescript
+   * const stream = dataset.selStream(
+   *   { time: ['2020-01-01', '2020-12-31'], lat: 45, lon: -73 },
+   *   { chunkSize: 50 } // 50MB chunks
+   * );
+   *
+   * for await (const chunk of stream) {
+   *   console.log(`Progress: ${chunk.progress}%`);
+   *   const temp = chunk.data.getVariable('temperature');
+   *   await writeToFile(temp);
+   * }
+   * ```
+   */
+  async *selStream(
+    selection: Selection,
+    options?: StreamOptions
+  ): AsyncGenerator<StreamChunk<Dataset>> {
+    // Get the first data variable to use as reference for streaming
+    const firstVarName = this.dataVars[0];
+    if (!firstVarName) {
+      throw new Error('Dataset has no variables');
+    }
+
+    const firstVar = this._dataVars.get(firstVarName)!;
+
+    // Create stream from first variable
+    const varStream = firstVar.selStream(selection, options);
+
+    // Iterate through chunks
+    for await (const chunk of varStream) {
+      const newDataVars: { [name: string]: DataArray } = {};
+
+      // For each variable, get the corresponding chunk
+      for (const [name, dataArray] of this._dataVars.entries()) {
+        // Only apply selection to dimensions present in this dataArray
+        const relevantSelection: Selection = {};
+        for (const dim of dataArray.dims) {
+          if (selection[dim] !== undefined) {
+            relevantSelection[dim] = selection[dim];
+          }
+        }
+
+        if (Object.keys(relevantSelection).length > 0) {
+          // For the first variable, use the chunk data
+          if (name === firstVarName) {
+            newDataVars[name] = chunk.data;
+          } else {
+            // For other variables, perform the same selection
+            // Build chunk-specific selection based on first var's chunk
+            const chunkSelection = this._buildChunkSelection(
+              relevantSelection,
+              chunk.data,
+              options?.dimension || firstVar.dims[0]
+            );
+            newDataVars[name] = await dataArray.sel(chunkSelection, {
+              method: options?.method,
+              tolerance: options?.tolerance
+            });
+          }
+        } else {
+          newDataVars[name] = dataArray;
+        }
+      }
+
+      // Update coordinates from the selected DataArrays
+      const newCoords: Coordinates = {};
+      for (const dataArray of Object.values(newDataVars)) {
+        for (const dim of dataArray.dims) {
+          if (!newCoords[dim]) {
+            newCoords[dim] = dataArray.coords[dim];
+          }
+        }
+      }
+
+      yield {
+        data: new Dataset(newDataVars, {
+          coords: newCoords,
+          attrs: this._attrs,
+          coordAttrs: this._coordAttrs
+        }),
+        progress: chunk.progress,
+        bytesProcessed: chunk.bytesProcessed,
+        totalBytes: chunk.totalBytes,
+        chunkIndex: chunk.chunkIndex,
+        totalChunks: chunk.totalChunks
+      };
+    }
   }
 
   /**
@@ -488,5 +586,27 @@ export class Dataset {
     }
   ): Promise<Dataset> {
     return ZarrBackend.open(storeOrCid, options);
+  }
+
+  /**
+   * Build chunk-specific selection based on reference chunk
+   */
+  private _buildChunkSelection(
+    baseSelection: Selection,
+    referenceChunk: DataArray,
+    chunkDim: DimensionName
+  ): Selection {
+    const chunkSelection: Selection = { ...baseSelection };
+
+    // Get the coordinate values from the reference chunk for the chunk dimension
+    if (referenceChunk.dims.includes(chunkDim)) {
+      const chunkCoords = referenceChunk.coords[chunkDim];
+      if (chunkCoords && chunkCoords.length > 0) {
+        // Use the actual coordinate values from the chunk
+        chunkSelection[chunkDim] = chunkCoords.length === 1 ? chunkCoords[0] : chunkCoords;
+      }
+    }
+
+    return chunkSelection;
   }
 }

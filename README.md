@@ -8,9 +8,11 @@ A JavaScript/TypeScript implementation similar to Python's xarray library for wo
 - **Dataset**: Collections of multiple DataArrays with shared dimensions
 - **Selection**: Select data by labels (`sel`) or integer positions (`isel`)
 - **Nearest Neighbor**: Support for `nearest`, `ffill`, and `bfill` selection methods with tolerance
+- **Streaming**: Process large datasets in chunks with progress tracking
 - **Aggregations**: Compute statistics along dimensions (sum, mean)
 - **Type-safe**: Written in TypeScript with full type definitions
 - **Immutable operations**: All operations return new instances
+- **Memory efficient**: Stream large selections without loading everything into memory
 
 ## Installation
 
@@ -112,6 +114,48 @@ const tolerant = await data.sel({ x: 7 }, {
 
 // This would throw an error (distance 7 > tolerance 2)
 await data.sel({ x: 13 }, { method: 'nearest', tolerance: 2 });
+```
+
+### Streaming Large Datasets
+
+For large datasets that don't fit in memory, use streaming to process data in chunks:
+
+```typescript
+// Stream large time series data
+const largeData = new DataArray(/* ... large array ... */, {
+  dims: ['time'],
+  coords: { time: /* ... */ }
+});
+
+const stream = largeData.selStream(
+  { time: ['2020-01-01', '2020-12-31'] },
+  { chunkSize: 50 } // Process in 50MB chunks
+);
+
+for await (const chunk of stream) {
+  console.log(`Progress: ${chunk.progress}%`);
+  console.log(`Processing ${chunk.bytesProcessed} / ${chunk.totalBytes} bytes`);
+
+  // Process this chunk (e.g., write to file, compute statistics)
+  await processChunk(chunk.data);
+}
+```
+
+Streaming also works with Datasets:
+
+```typescript
+const stream = dataset.selStream(
+  { time: ['2020-01-01', '2020-12-31'], lat: 45, lon: -73 },
+  { chunkSize: 100, method: 'nearest' }
+);
+
+for await (const chunk of stream) {
+  const temp = chunk.data.getVariable('temperature');
+  const pressure = chunk.data.getVariable('pressure');
+
+  // Write chunk to disk or process incrementally
+  await writeToFile(temp, pressure);
+}
 ```
 
 ### Aggregations
@@ -231,6 +275,11 @@ new DataArray(data, options?)
 - `sel(selection, options?)`: Select by coordinate labels
   - `options.method`: Selection method ('nearest', 'ffill', 'bfill', 'pad', 'backfill')
   - `options.tolerance`: Maximum distance for method selection
+- `selStream(selection, options?)`: Stream selection in chunks (returns AsyncGenerator)
+  - `options.chunkSize`: Target chunk size in MB (default: 100)
+  - `options.dimension`: Dimension to chunk along (default: auto-detect)
+  - `options.method`: Selection method
+  - `options.tolerance`: Maximum distance for method selection
 - `isel(selection)`: Select by integer positions
 - `sum(dim?)`: Sum along dimension (or all values)
 - `mean(dim?)`: Mean along dimension (or all values)
@@ -268,6 +317,11 @@ new Dataset(dataVars?, options?)
 - `removeVariable(name)`: Remove a variable
 - `sel(selection, options?)`: Select by coordinate labels
   - `options.method`: Selection method ('nearest', 'ffill', 'bfill', 'pad', 'backfill')
+  - `options.tolerance`: Maximum distance for method selection
+- `selStream(selection, options?)`: Stream selection in chunks (returns AsyncGenerator)
+  - `options.chunkSize`: Target chunk size in MB (default: 100)
+  - `options.dimension`: Dimension to chunk along (default: auto-detect)
+  - `options.method`: Selection method
   - `options.tolerance`: Maximum distance for method selection
 - `isel(selection)`: Select by integer positions
 - `map(fn)`: Apply function to all variables

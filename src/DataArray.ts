@@ -12,7 +12,9 @@ import {
   DataArrayOptions,
   Selection,
   CoordinateValue,
-  SelectionOptions
+  SelectionOptions,
+  StreamOptions,
+  StreamChunk
 } from './types';
 import { getShape, flatten, reshape, deepClone } from './utils';
 import { isTimeCoordinate, parseCFTimeUnits } from './cf-time';
@@ -202,11 +204,129 @@ export class DataArray {
   }
 
   /**
+   * Stream data selection in chunks (useful for large datasets)
+   * @param selection - Selection specification
+   * @param options - Streaming options including chunk size and dimension
+   * @returns AsyncGenerator yielding chunks with progress information
+   *
+   * @example
+   * ```typescript
+   * const stream = dataArray.selStream(
+   *   { time: ['2020-01-01', '2020-12-31'] },
+   *   { chunkSize: 50 } // 50MB chunks
+   * );
+   *
+   * for await (const chunk of stream) {
+   *   console.log(`Progress: ${chunk.progress}%`);
+   *   processData(chunk.data);
+   * }
+   * ```
+   */
+  async *selStream(
+    selection: Selection,
+    options?: StreamOptions
+  ): AsyncGenerator<StreamChunk<DataArray>> {
+    const chunkSizeMB = options?.chunkSize || 100;
+    const chunkSizeBytes = chunkSizeMB * 1024 * 1024;
+    const method = options?.method;
+    const tolerance = options?.tolerance;
+
+    // Determine which dimension to chunk along
+    const chunkDim = options?.dimension || this._selectChunkDimension(selection);
+    const chunkDimIndex = this._dims.indexOf(chunkDim);
+
+    if (chunkDimIndex === -1) {
+      throw new Error(`Dimension '${chunkDim}' not found in DataArray`);
+    }
+
+    // Calculate the range for the chunk dimension
+    const dimSelection = selection[chunkDim];
+    let startIdx: number;
+    let endIdx: number;
+
+    if (dimSelection === undefined) {
+      // No selection on chunk dimension - use full range
+      startIdx = 0;
+      endIdx = this._shape[chunkDimIndex] - 1;
+    } else if (Array.isArray(dimSelection)) {
+      // Array selection - get indices
+      const indices = dimSelection.map(v => this._findCoordinateIndex(chunkDim, v, { method, tolerance }));
+      startIdx = Math.min(...indices);
+      endIdx = Math.max(...indices);
+    } else if (typeof dimSelection === 'object' && 'start' in dimSelection) {
+      // Slice selection
+      const { start, stop } = dimSelection;
+      startIdx = start !== undefined ? this._findCoordinateIndex(chunkDim, start, { method, tolerance }) : 0;
+      endIdx = stop !== undefined ? this._findCoordinateIndex(chunkDim, stop, { method, tolerance }) : this._shape[chunkDimIndex] - 1;
+    } else {
+      // Single value - no need to stream
+      const result = await this.sel(selection, { method, tolerance });
+      yield {
+        data: result,
+        progress: 100,
+        bytesProcessed: this._estimateSize(result),
+        totalBytes: this._estimateSize(result),
+        chunkIndex: 0,
+        totalChunks: 1
+      };
+      return;
+    }
+
+    // Calculate bytes per element along chunk dimension
+    const bytesPerElement = 8; // Assume float64
+    const elementsPerSlice = this._shape.reduce((acc, size, i) =>
+      i === chunkDimIndex ? acc : acc * size, 1
+    );
+    const bytesPerSlice = elementsPerSlice * bytesPerElement;
+
+    // Calculate chunk size in terms of dimension steps
+    const stepsPerChunk = Math.max(1, Math.floor(chunkSizeBytes / bytesPerSlice));
+    const totalSteps = endIdx - startIdx + 1;
+    const totalChunks = Math.ceil(totalSteps / stepsPerChunk);
+    const totalBytes = totalSteps * bytesPerSlice;
+
+    let bytesProcessed = 0;
+
+    // Iterate in chunks
+    for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+      const chunkStart = startIdx + chunkIdx * stepsPerChunk;
+      const chunkEnd = Math.min(chunkStart + stepsPerChunk - 1, endIdx);
+
+      // Build selection for this chunk
+      const chunkSelection: Selection = { ...selection };
+      const chunkCoords = this._coords[chunkDim].slice(chunkStart, chunkEnd + 1);
+
+      if (chunkCoords.length === 1) {
+        chunkSelection[chunkDim] = chunkCoords[0];
+      } else {
+        chunkSelection[chunkDim] = chunkCoords;
+      }
+
+      // Execute selection for this chunk
+      const chunkData = await this.sel(chunkSelection, { method, tolerance });
+
+      // Update progress
+      const chunkBytes = (chunkEnd - chunkStart + 1) * bytesPerSlice;
+      bytesProcessed += chunkBytes;
+      const progress = Math.round((bytesProcessed / totalBytes) * 100);
+
+      yield {
+        data: chunkData,
+        progress,
+        bytesProcessed,
+        totalBytes,
+        chunkIndex: chunkIdx,
+        totalChunks
+      };
+    }
+  }
+
+  /**
    * Select data by integer position
    */
   async isel(selection: { [dimension: string]: number | number[] }): Promise<DataArray> {
     const indexSelection: Selection = {};
-    
+
     for (const [dim, sel] of Object.entries(selection)) {
       if (typeof sel === 'number') {
         // Convert index to coordinate value
@@ -701,5 +821,29 @@ export class DataArray {
     }
 
     return data.map((item: any) => this._divideArray(item, divisor)) as NDArray;
+  }
+
+  /**
+   * Select best dimension to chunk along for streaming
+   */
+  private _selectChunkDimension(selection: Selection): DimensionName {
+    // Prefer dimensions with range selections
+    for (const dim of this._dims) {
+      const sel = selection[dim];
+      if (Array.isArray(sel) || (typeof sel === 'object' && 'start' in sel)) {
+        return dim;
+      }
+    }
+
+    // Fall back to first dimension (usually time for climate data)
+    return this._dims[0];
+  }
+
+  /**
+   * Estimate size in bytes for a DataArray
+   */
+  private _estimateSize(dataArray: DataArray): number {
+    const bytesPerElement = 8; // Assume float64
+    return dataArray.size * bytesPerElement;
   }
 }
