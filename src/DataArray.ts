@@ -11,7 +11,8 @@ import {
   Attributes,
   DataArrayOptions,
   Selection,
-  CoordinateValue
+  CoordinateValue,
+  SelectionOptions
 } from './types';
 import { getShape, flatten, reshape, deepClone } from './utils';
 import { isTimeCoordinate, parseCFTimeUnits } from './cf-time';
@@ -152,13 +153,13 @@ export class DataArray {
   /**
    * Select data by coordinate labels
    */
-  async sel(selection: Selection): Promise<DataArray> {
+  async sel(selection: Selection, options?: SelectionOptions): Promise<DataArray> {
     // Check if this is a lazy-loaded array with a loader function
     if (this._attrs._lazy && this._attrs._lazyLoader) {
-      return this._selLazy(selection);
+      return this._selLazy(selection, options);
     }
 
-    const newData = this._selectData(selection);
+    const newData = this._selectData(selection, options);
     const newDims: DimensionName[] = [];
     const newCoords: Coordinates = {};
     const newShape = getShape(newData);
@@ -319,7 +320,7 @@ export class DataArray {
 
   // Private helper methods
 
-  private async _selLazy(selection: Selection): Promise<DataArray> {
+  private async _selLazy(selection: Selection, options?: SelectionOptions): Promise<DataArray> {
     const loader = this._attrs._lazyLoader;
 
     // Build index ranges for each dimension
@@ -338,12 +339,12 @@ export class DataArray {
         newCoords[dim] = this._coords[dim];
       } else if (typeof sel === 'number' || typeof sel === 'string' || sel instanceof Date) {
         // Single value - dimension will be dropped
-        const index = this._findCoordinateIndex(dim, sel);
+        const index = this._findCoordinateIndex(dim, sel, options);
         indexRanges[dim] = index;
         // Don't add to newDims or newCoords
       } else if (Array.isArray(sel)) {
         // Multiple values selection - convert to range
-        const indices = sel.map(v => this._findCoordinateIndex(dim, v));
+        const indices = sel.map(v => this._findCoordinateIndex(dim, v, options));
         const minIdx = Math.min(...indices);
         const maxIdx = Math.max(...indices);
         indexRanges[dim] = { start: minIdx, stop: maxIdx + 1 };
@@ -352,8 +353,8 @@ export class DataArray {
       } else if (typeof sel === 'object' && 'start' in sel) {
         // Slice selection
         const { start, stop } = sel;
-        const startIndex = start !== undefined ? this._findCoordinateIndex(dim, start) : 0;
-        const stopIndex = stop !== undefined ? this._findCoordinateIndex(dim, stop) + 1 : this._shape[i];
+        const startIndex = start !== undefined ? this._findCoordinateIndex(dim, start, options) : 0;
+        const stopIndex = stop !== undefined ? this._findCoordinateIndex(dim, stop, options) + 1 : this._shape[i];
         indexRanges[dim] = { start: startIndex, stop: stopIndex };
         newDims.push(dim);
         newCoords[dim] = this._coords[dim].slice(startIndex, stopIndex);
@@ -379,7 +380,7 @@ export class DataArray {
     }
   }
 
-  private _selectData(selection: Selection): NDArray {
+  private _selectData(selection: Selection, options?: SelectionOptions): NDArray {
     let result: any = this._data;
     let dimensionsDropped = 0;
 
@@ -396,18 +397,18 @@ export class DataArray {
 
       if (typeof sel === 'number' || typeof sel === 'string' || sel instanceof Date) {
         // Single value selection - this will drop a dimension
-        const index = this._findCoordinateIndex(dim, sel);
+        const index = this._findCoordinateIndex(dim, sel, options);
         result = this._selectAtDimension(result, currentDimIndex, index);
         dimensionsDropped++;
       } else if (Array.isArray(sel)) {
         // Multiple values selection
-        const indices = sel.map(v => this._findCoordinateIndex(dim, v));
+        const indices = sel.map(v => this._findCoordinateIndex(dim, v, options));
         result = this._selectMultipleAtDimension(result, currentDimIndex, indices);
       } else if (typeof sel === 'object' && 'start' in sel) {
         // Slice selection
         const { start, stop } = sel;
-        const startIndex = start !== undefined ? this._findCoordinateIndex(dim, start) : 0;
-        const stopIndex = stop !== undefined ? this._findCoordinateIndex(dim, stop) + 1 : this._shape[i];
+        const startIndex = start !== undefined ? this._findCoordinateIndex(dim, start, options) : 0;
+        const stopIndex = stop !== undefined ? this._findCoordinateIndex(dim, stop, options) + 1 : this._shape[i];
         result = this._sliceAtDimension(result, currentDimIndex, startIndex, stopIndex);
       }
     }
@@ -415,8 +416,10 @@ export class DataArray {
     return result;
   }
 
-  private _findCoordinateIndex(dim: DimensionName, value: CoordinateValue): number {
+  private _findCoordinateIndex(dim: DimensionName, value: CoordinateValue, options?: SelectionOptions): number {
     const coords = this._coords[dim];
+    const method = options?.method;
+    const tolerance = options?.tolerance;
 
     // Handle time coordinate conversion for string dates
     if (typeof value === 'string') {
@@ -491,6 +494,15 @@ export class DataArray {
       }
     }
 
+    // Apply selection method
+    if (method === 'nearest') {
+      return this._findNearestIndex(coords, value, tolerance);
+    } else if (method === 'ffill' || method === 'pad') {
+      return this._findFfillIndex(coords, value, tolerance);
+    } else if (method === 'bfill' || method === 'backfill') {
+      return this._findBfillIndex(coords, value, tolerance);
+    }
+
     // Default exact match
     const index = coords.indexOf(value);
     if (index === -1) {
@@ -498,6 +510,98 @@ export class DataArray {
     }
 
     return index;
+  }
+
+  /**
+   * Find nearest coordinate index
+   */
+  private _findNearestIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number): number {
+    if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
+      throw new Error('Nearest neighbor lookup requires numeric coordinates');
+    }
+
+    let closestIndex = 0;
+    let minDiff = Math.abs((coords[0] as number) - value);
+
+    for (let i = 1; i < coords.length; i++) {
+      const diff = Math.abs((coords[i] as number) - value);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestIndex = i;
+      }
+    }
+
+    if (tolerance !== undefined && minDiff > tolerance) {
+      throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+    }
+
+    return closestIndex;
+  }
+
+  /**
+   * Find forward fill index (last valid index <= value)
+   */
+  private _findFfillIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number): number {
+    if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
+      throw new Error('Forward fill requires numeric coordinates');
+    }
+
+    let lastValidIndex = -1;
+    let minDiff = Infinity;
+
+    for (let i = 0; i < coords.length; i++) {
+      const coordValue = coords[i] as number;
+      if (coordValue <= value) {
+        const diff = value - coordValue;
+        if (diff < minDiff) {
+          minDiff = diff;
+          lastValidIndex = i;
+        }
+      }
+    }
+
+    if (lastValidIndex === -1) {
+      throw new Error(`No coordinate <= ${value} for forward fill`);
+    }
+
+    if (tolerance !== undefined && minDiff > tolerance) {
+      throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+    }
+
+    return lastValidIndex;
+  }
+
+  /**
+   * Find backward fill index (first valid index >= value)
+   */
+  private _findBfillIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number): number {
+    if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
+      throw new Error('Backward fill requires numeric coordinates');
+    }
+
+    let firstValidIndex = -1;
+    let minDiff = Infinity;
+
+    for (let i = 0; i < coords.length; i++) {
+      const coordValue = coords[i] as number;
+      if (coordValue >= value) {
+        const diff = coordValue - value;
+        if (diff < minDiff) {
+          minDiff = diff;
+          firstValidIndex = i;
+        }
+      }
+    }
+
+    if (firstValidIndex === -1) {
+      throw new Error(`No coordinate >= ${value} for backward fill`);
+    }
+
+    if (tolerance !== undefined && minDiff > tolerance) {
+      throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+    }
+
+    return firstValidIndex;
   }
 
   private _selectAtDimension(data: any, dimIndex: number, index: number): any {

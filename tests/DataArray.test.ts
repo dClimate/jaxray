@@ -52,7 +52,7 @@ describe('DataArray', () => {
     expect(da.dims).toEqual(['dim_0', 'dim_1']);
   });
 
-  test('should select data by label using sel()', () => {
+  test('should select data by label using sel()', async () => {
     const data = [1, 2, 3, 4, 5];
     const da = new DataArray(data, {
       dims: ['x'],
@@ -61,8 +61,8 @@ describe('DataArray', () => {
       }
     });
 
-    const selected = da.sel({ x: 30 });
-    expect(selected).toBe(3);
+    const selected = await da.sel({ x: 30 });
+    expect(selected.data).toBe(3);
   });
 
   test('should select multiple values using sel()', async () => {
@@ -202,5 +202,201 @@ describe('DataArray', () => {
         coords: { x: [0, 1] } // Wrong length
       });
     }).toThrow();
+  });
+
+  describe('Selection methods', () => {
+    test('should select nearest neighbor', async () => {
+      const data = [10, 20, 30, 40, 50];
+      const da = new DataArray(data, {
+        dims: ['x'],
+        coords: {
+          x: [0, 5, 10, 15, 20]
+        }
+      });
+
+      // Select nearest to 7 (should be 5)
+      const selected = await da.sel({ x: 7 }, { method: 'nearest' });
+      expect(selected.data).toBe(20);
+
+      // Select nearest to 13 (should be 15)
+      const selected2 = await da.sel({ x: 13 }, { method: 'nearest' });
+      expect(selected2.data).toBe(40);
+
+      // Select nearest to 2.4 (should be 0, distance 2.4)
+      const selected3 = await da.sel({ x: 2.4 }, { method: 'nearest' });
+      expect(selected3.data).toBe(10);
+    });
+
+    test('should use tolerance with nearest neighbor', async () => {
+      const data = [10, 20, 30, 40, 50];
+      const da = new DataArray(data, {
+        dims: ['x'],
+        coords: {
+          x: [0, 5, 10, 15, 20]
+        }
+      });
+
+      // This should work (distance = 2)
+      const selected = await da.sel({ x: 7 }, { method: 'nearest', tolerance: 3 });
+      expect(selected.data).toBe(20);
+
+      // This should fail (distance = 7)
+      await expect(
+        da.sel({ x: 7 }, { method: 'nearest', tolerance: 1 })
+      ).rejects.toThrow('No coordinate within tolerance');
+    });
+
+    test('should forward fill (ffill/pad)', async () => {
+      const data = [10, 20, 30, 40, 50];
+      const da = new DataArray(data, {
+        dims: ['x'],
+        coords: {
+          x: [0, 5, 10, 15, 20]
+        }
+      });
+
+      // Select last value <= 7 (should be 5)
+      const selected1 = await da.sel({ x: 7 }, { method: 'ffill' });
+      expect(selected1.data).toBe(20);
+
+      // Select last value <= 12 (should be 10)
+      const selected2 = await da.sel({ x: 12 }, { method: 'pad' });
+      expect(selected2.data).toBe(30);
+
+      // Select exact match
+      const selected3 = await da.sel({ x: 10 }, { method: 'ffill' });
+      expect(selected3.data).toBe(30);
+
+      // Should fail if no value <= target
+      await expect(
+        da.sel({ x: -5 }, { method: 'ffill' })
+      ).rejects.toThrow('No coordinate <= -5');
+    });
+
+    test('should backward fill (bfill/backfill)', async () => {
+      const data = [10, 20, 30, 40, 50];
+      const da = new DataArray(data, {
+        dims: ['x'],
+        coords: {
+          x: [0, 5, 10, 15, 20]
+        }
+      });
+
+      // Select first value >= 7 (should be 10)
+      const selected1 = await da.sel({ x: 7 }, { method: 'bfill' });
+      expect(selected1.data).toBe(30);
+
+      // Select first value >= 12 (should be 15)
+      const selected2 = await da.sel({ x: 12 }, { method: 'backfill' });
+      expect(selected2.data).toBe(40);
+
+      // Select exact match
+      const selected3 = await da.sel({ x: 10 }, { method: 'bfill' });
+      expect(selected3.data).toBe(30);
+
+      // Should fail if no value >= target
+      await expect(
+        da.sel({ x: 25 }, { method: 'bfill' })
+      ).rejects.toThrow('No coordinate >= 25');
+    });
+
+    test('should work with multiple dimensions', async () => {
+      const data = [
+        [1, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9]
+      ];
+      const da = new DataArray(data, {
+        dims: ['y', 'x'],
+        coords: {
+          y: [0, 10, 20],
+          x: [0, 5, 10]
+        }
+      });
+
+      // Select using nearest on both dimensions
+      const selected = await da.sel(
+        { y: 8, x: 6 },
+        { method: 'nearest' }
+      );
+      expect(selected.data).toBe(5);
+
+      // Mixed: exact on one, nearest on other
+      const selected2 = await da.sel(
+        { y: 10, x: 7 },
+        { method: 'nearest' }
+      );
+      expect(selected2.data).toBe(5);
+    });
+
+    test('should throw error for non-numeric coordinates with nearest', async () => {
+      const data = [1, 2, 3];
+      const da = new DataArray(data, {
+        dims: ['x'],
+        coords: {
+          x: ['a', 'b', 'c']
+        }
+      });
+
+      await expect(
+        da.sel({ x: 'x' }, { method: 'nearest' })
+      ).rejects.toThrow('Nearest neighbor lookup requires numeric coordinates');
+    });
+
+    test('should work with array selections using method', async () => {
+      const data = [10, 20, 30, 40, 50];
+      const da = new DataArray(data, {
+        dims: ['x'],
+        coords: {
+          x: [0, 5, 10, 15, 20]
+        }
+      });
+
+      // Select multiple values with nearest
+      // 3 -> nearest is 5 (index 1)
+      // 8 -> nearest is 10 (index 2)
+      // 17 -> nearest is 15 (index 3)
+      // Array selection creates a range from min to max index
+      const selected = await da.sel({ x: [3, 8, 17] }, { method: 'nearest' });
+      expect(selected.data).toEqual([20, 30, 40]);
+    });
+
+    test('should apply tolerance to ffill', async () => {
+      const data = [10, 20, 30];
+      const da = new DataArray(data, {
+        dims: ['x'],
+        coords: {
+          x: [0, 10, 20]
+        }
+      });
+
+      // Should work (distance = 3)
+      const selected1 = await da.sel({ x: 13 }, { method: 'ffill', tolerance: 5 });
+      expect(selected1.data).toBe(20);
+
+      // Should fail (distance = 13)
+      await expect(
+        da.sel({ x: 13 }, { method: 'ffill', tolerance: 2 })
+      ).rejects.toThrow('No coordinate within tolerance');
+    });
+
+    test('should apply tolerance to bfill', async () => {
+      const data = [10, 20, 30];
+      const da = new DataArray(data, {
+        dims: ['x'],
+        coords: {
+          x: [0, 10, 20]
+        }
+      });
+
+      // Should work (distance = 7)
+      const selected1 = await da.sel({ x: 13 }, { method: 'bfill', tolerance: 10 });
+      expect(selected1.data).toBe(30);
+
+      // Should fail (distance = 7)
+      await expect(
+        da.sel({ x: 13 }, { method: 'bfill', tolerance: 5 })
+      ).rejects.toThrow('No coordinate within tolerance');
+    });
   });
 });

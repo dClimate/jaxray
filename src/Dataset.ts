@@ -11,7 +11,8 @@ import {
   Selection,
   DimensionName,
   CoordinateValue,
-  DataValue
+  DataValue,
+  SelectionOptions
 } from './types';
 import { deepClone } from './utils';
 import { formatCoordinateValue } from './cf-time';
@@ -147,6 +148,32 @@ export class Dataset {
   }
 
   /**
+   * Dictionary-style access to data variables (xarray-style)
+   * Supports:
+   * - ds['varname'] -> returns DataArray
+   * - ds[['var1', 'var2']] -> returns new Dataset with subset
+   */
+  get(key: string | string[]): DataArray | Dataset {
+    if (typeof key === 'string') {
+      return this.getVariable(key);
+    } else if (Array.isArray(key)) {
+      const newDataVars: { [name: string]: DataArray } = {};
+      for (const varName of key) {
+        if (!this.hasVariable(varName)) {
+          throw new Error(`Variable '${varName}' not found in dataset`);
+        }
+        newDataVars[varName] = this._dataVars.get(varName)!;
+      }
+      return new Dataset(newDataVars, {
+        coords: this._coords,
+        attrs: this._attrs,
+        coordAttrs: this._coordAttrs
+      });
+    }
+    throw new Error('Key must be a string or array of strings');
+  }
+
+  /**
    * Check if a variable exists
    */
   hasVariable(name: string): boolean {
@@ -163,7 +190,7 @@ export class Dataset {
   /**
    * Select data by coordinate labels
    */
-  async sel(selection: Selection): Promise<Dataset> {
+  async sel(selection: Selection, options?: SelectionOptions): Promise<Dataset> {
     const newDataVars: { [name: string]: DataArray } = {};
 
     for (const [name, dataArray] of this._dataVars.entries()) {
@@ -176,7 +203,7 @@ export class Dataset {
       }
 
       if (Object.keys(relevantSelection).length > 0) {
-        newDataVars[name] = await dataArray.sel(relevantSelection);
+        newDataVars[name] = await dataArray.sel(relevantSelection, options);
       } else {
         newDataVars[name] = dataArray;
       }

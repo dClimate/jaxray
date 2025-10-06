@@ -7,6 +7,7 @@ A JavaScript/TypeScript implementation similar to Python's xarray library for wo
 - **DataArray**: Labeled, multi-dimensional arrays with named dimensions and coordinates
 - **Dataset**: Collections of multiple DataArrays with shared dimensions
 - **Selection**: Select data by labels (`sel`) or integer positions (`isel`)
+- **Nearest Neighbor**: Support for `nearest`, `ffill`, and `bfill` selection methods with tolerance
 - **Aggregations**: Compute statistics along dimensions (sum, mean)
 - **Type-safe**: Written in TypeScript with full type definitions
 - **Immutable operations**: All operations return new instances
@@ -62,20 +63,55 @@ const gridData = new DataArray(
 
 ```typescript
 // Select by label
-const wednesday = temperatures.sel({ time: 'Wed' });
+const wednesday = await temperatures.sel({ time: 'Wed' });
 console.log(wednesday.data); // 25
 
 // Select multiple values
-const selected = temperatures.sel({ time: ['Mon', 'Wed', 'Fri'] });
+const selected = await temperatures.sel({ time: ['Mon', 'Wed', 'Fri'] });
 console.log(selected.data); // [20, 25, 21]
 
 // Slice selection
-const midweek = temperatures.sel({ time: { start: 'Tue', stop: 'Thu' } });
+const midweek = await temperatures.sel({ time: { start: 'Tue', stop: 'Thu' } });
 console.log(midweek.data); // [22, 25, 23]
 
 // Select by integer position
-const byIndex = temperatures.isel({ time: 2 });
+const byIndex = await temperatures.isel({ time: 2 });
 console.log(byIndex.data); // 25
+```
+
+### Nearest Neighbor Selection
+
+jaxray supports xarray-style nearest neighbor lookups and interpolation methods:
+
+```typescript
+const data = new DataArray([10, 20, 30, 40, 50], {
+  dims: ['x'],
+  coords: {
+    x: [0, 5, 10, 15, 20]
+  }
+});
+
+// Find nearest coordinate
+const nearest = await data.sel({ x: 7 }, { method: 'nearest' });
+console.log(nearest.data); // 20 (nearest to x=7 is x=5)
+
+// Forward fill (last value <= target)
+const ffill = await data.sel({ x: 12 }, { method: 'ffill' });
+console.log(ffill.data); // 30 (last value where x <= 12 is x=10)
+
+// Backward fill (first value >= target)
+const bfill = await data.sel({ x: 12 }, { method: 'bfill' });
+console.log(bfill.data); // 40 (first value where x >= 12 is x=15)
+
+// With tolerance
+const tolerant = await data.sel({ x: 7 }, {
+  method: 'nearest',
+  tolerance: 3
+});
+// Succeeds because distance is 2
+
+// This would throw an error (distance 7 > tolerance 2)
+await data.sel({ x: 13 }, { method: 'nearest', tolerance: 2 });
 ```
 
 ### Aggregations
@@ -132,9 +168,15 @@ console.log(weather.dataVars); // ['temperature', 'pressure']
 console.log(weather.dims);     // ['lat', 'lon']
 
 // Select from Dataset
-const location = weather.sel({ lat: 40.0, lon: -73.5 });
+const location = await weather.sel({ lat: 40.0, lon: -73.5 });
 const tempAtLocation = location.getVariable('temperature');
 console.log(tempAtLocation?.data); // 16
+
+// Works with nearest neighbor too
+const nearLocation = await weather.sel(
+  { lat: 40.2, lon: -73.7 },
+  { method: 'nearest' }
+);
 ```
 
 ### Merging Datasets
@@ -186,7 +228,9 @@ new DataArray(data, options?)
 
 #### Methods
 
-- `sel(selection)`: Select by coordinate labels
+- `sel(selection, options?)`: Select by coordinate labels
+  - `options.method`: Selection method ('nearest', 'ffill', 'bfill', 'pad', 'backfill')
+  - `options.tolerance`: Maximum distance for method selection
 - `isel(selection)`: Select by integer positions
 - `sum(dim?)`: Sum along dimension (or all values)
 - `mean(dim?)`: Mean along dimension (or all values)
@@ -218,10 +262,13 @@ new Dataset(dataVars?, options?)
 #### Methods
 
 - `addVariable(name, dataArray)`: Add a new variable
-- `getVariable(name)`: Get a variable by name
+- `getVariable(name)`: Get a variable by name (throws if not found)
+- `get(key)`: Dictionary-style access - `get('varname')` or `get(['var1', 'var2'])`
 - `hasVariable(name)`: Check if variable exists
 - `removeVariable(name)`: Remove a variable
-- `sel(selection)`: Select by coordinate labels
+- `sel(selection, options?)`: Select by coordinate labels
+  - `options.method`: Selection method ('nearest', 'ffill', 'bfill', 'pad', 'backfill')
+  - `options.tolerance`: Maximum distance for method selection
 - `isel(selection)`: Select by integer positions
 - `map(fn)`: Apply function to all variables
 - `merge(other)`: Merge with another Dataset

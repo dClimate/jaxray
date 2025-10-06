@@ -3,8 +3,6 @@
 
 import { CID } from "multiformats/cid";
 import { base58btc } from "multiformats/bases/base58";
-import { bytes } from "multiformats";
-import { blake3 } from "@noble/hashes/blake3";
 
 // -------------------------- IPLD kind (scalar only) --------------------------
 // Python note said: allow IPLDKind scalar, but exclude lists/dicts/None.

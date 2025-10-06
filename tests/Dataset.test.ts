@@ -77,25 +77,25 @@ describe('Dataset', () => {
     expect(sizes.y).toBe(2);
   });
 
-  test('should select data using sel()', () => {
+  test('should select data using sel()', async () => {
     const temp = new DataArray([1, 2, 3, 4, 5], {
       dims: ['x'],
       coords: { x: [10, 20, 30, 40, 50] }
     });
     const ds = new Dataset({ temperature: temp });
 
-    const selected = ds.sel({ x: 30 });
+    const selected = await ds.sel({ x: 30 });
     const selectedTemp = selected.getVariable('temperature');
 
     expect(selectedTemp).toBeTruthy();
     expect(selectedTemp?.data).toBe(3);
   });
 
-  test('should select data using isel()', () => {
+  test('should select data using isel()', async () => {
     const temp = new DataArray([1, 2, 3, 4, 5], { dims: ['x'] });
     const ds = new Dataset({ temperature: temp });
 
-    const selected = ds.isel({ x: 2 });
+    const selected = await ds.isel({ x: 2 });
     const selectedTemp = selected.getVariable('temperature');
 
     expect(selectedTemp).toBeTruthy();
@@ -193,5 +193,132 @@ describe('Dataset', () => {
     expect(() => {
       ds.addVariable('pressure', temp2);
     }).toThrow();
+  });
+
+  describe('Selection methods', () => {
+    test('should select with nearest neighbor method', async () => {
+      const temp = new DataArray([10, 20, 30, 40, 50], {
+        dims: ['x'],
+        coords: {
+          x: [0, 5, 10, 15, 20]
+        }
+      });
+      const pressure = new DataArray([100, 200, 300, 400, 500], {
+        dims: ['x'],
+        coords: {
+          x: [0, 5, 10, 15, 20]
+        }
+      });
+
+      const ds = new Dataset({ temperature: temp, pressure: pressure });
+
+      // Select nearest to 7 (should be index with x=5)
+      const selected = await ds.sel({ x: 7 }, { method: 'nearest' });
+      expect(selected.getVariable('temperature').data).toBe(20);
+      expect(selected.getVariable('pressure').data).toBe(200);
+    });
+
+    test('should select with tolerance', async () => {
+      const temp = new DataArray([10, 20, 30], {
+        dims: ['x'],
+        coords: {
+          x: [0, 10, 20]
+        }
+      });
+
+      const ds = new Dataset({ temperature: temp });
+
+      // Should work
+      const selected1 = await ds.sel({ x: 13 }, { method: 'nearest', tolerance: 5 });
+      expect(selected1.getVariable('temperature').data).toBe(20);
+
+      // Should fail
+      await expect(
+        ds.sel({ x: 13 }, { method: 'nearest', tolerance: 2 })
+      ).rejects.toThrow('No coordinate within tolerance');
+    });
+
+    test('should select with ffill method', async () => {
+      const temp = new DataArray([10, 20, 30, 40], {
+        dims: ['x'],
+        coords: {
+          x: [0, 5, 10, 15]
+        }
+      });
+
+      const ds = new Dataset({ temperature: temp });
+
+      const selected = await ds.sel({ x: 7 }, { method: 'ffill' });
+      expect(selected.getVariable('temperature').data).toBe(20);
+    });
+
+    test('should select with bfill method', async () => {
+      const temp = new DataArray([10, 20, 30, 40], {
+        dims: ['x'],
+        coords: {
+          x: [0, 5, 10, 15]
+        }
+      });
+
+      const ds = new Dataset({ temperature: temp });
+
+      const selected = await ds.sel({ x: 7 }, { method: 'bfill' });
+      expect(selected.getVariable('temperature').data).toBe(30);
+    });
+
+    test('should work with multi-dimensional data', async () => {
+      const temp = new DataArray(
+        [
+          [1, 2, 3],
+          [4, 5, 6],
+          [7, 8, 9]
+        ],
+        {
+          dims: ['y', 'x'],
+          coords: {
+            y: [0, 10, 20],
+            x: [0, 5, 10]
+          }
+        }
+      );
+
+      const ds = new Dataset({ temperature: temp });
+
+      const selected = await ds.sel(
+        { y: 8, x: 6 },
+        { method: 'nearest' }
+      );
+      expect(selected.getVariable('temperature').data).toBe(5);
+    });
+
+    test('should apply method to relevant dimensions only', async () => {
+      const temp = new DataArray(
+        [
+          [1, 2, 3],
+          [4, 5, 6]
+        ],
+        {
+          dims: ['y', 'x'],
+          coords: {
+            y: [0, 10],
+            x: [0, 5, 10]
+          }
+        }
+      );
+      const pressure = new DataArray([100, 200], {
+        dims: ['y'],
+        coords: {
+          y: [0, 10]
+        }
+      });
+
+      const ds = new Dataset({ temperature: temp, pressure: pressure });
+
+      // Select with nearest on both dimensions
+      // y=8 nearest to 10, x=3 nearest to 5
+      const selected = await ds.sel({ y: 8, x: 3 }, { method: 'nearest' });
+      expect(selected.getVariable('temperature').data).toBe(5);
+      expect(selected.getVariable('pressure').data).toBe(200);
+    });
   });
 });

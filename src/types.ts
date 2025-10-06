@@ -58,8 +58,21 @@ export interface DatasetOptions {
 }
 
 /**
+ * Selection method for nearest neighbor lookups
+ */
+export type SelectionMethod = 'nearest' | 'ffill' | 'bfill' | 'pad' | 'backfill';
+
+/**
  * Selection specification for indexing
  */
 export type Selection = {
   [dimension: string]: number | number[] | CoordinateValue | CoordinateValue[] | { start?: CoordinateValue; stop?: CoordinateValue; step?: number };
 };
+
+/**
+ * Options for selection operations
+ */
+export interface SelectionOptions {
+  method?: SelectionMethod;
+  tolerance?: number;
+}
