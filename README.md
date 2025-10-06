@@ -1,18 +1,45 @@
-# jaxray
+<div align="center">
+  <img src="logo.svg" alt="jaxray logo" width="200"/>
+  <h1>jaxray</h1>
+  <p><strong>Labeled multi-dimensional arrays for JavaScript</strong></p>
 
-A JavaScript/TypeScript implementation similar to Python's xarray library for working with labeled multi-dimensional arrays.
+  [![npm version](https://img.shields.io/npm/v/jaxray?style=flat-square)](https://www.npmjs.com/package/jaxray)
+  [![License](https://img.shields.io/badge/license-ISC-blue.svg?style=flat-square)](LICENSE)
+  [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
+
+  <p>A JavaScript/TypeScript implementation inspired by Python's <a href="https://xarray.pydata.org/">xarray</a> library</p>
+
+  <p>
+    <a href="#features">Features</a> •
+    <a href="#installation">Installation</a> •
+    <a href="#quick-start">Quick Start</a> •
+    <a href="#api-reference">API</a> •
+    <a href="#examples">Examples</a>
+  </p>
+</div>
+
+---
+
+## Why jaxray?
+
+Working with multi-dimensional labeled data in JavaScript shouldn't be painful. jaxray brings the power of Python's xarray to the JavaScript ecosystem, making it easy to work with scientific data, climate datasets, and any labeled arrays.
+
+**Perfect for:**
+- 🌍 Climate and weather data analysis
+- 📊 Time series with multiple dimensions
+- 🗺️ Geospatial data processing
+- 🔬 Scientific computing in the browser
+- 📈 Large dataset streaming and processing
 
 ## Features
 
-- **DataArray**: Labeled, multi-dimensional arrays with named dimensions and coordinates
-- **Dataset**: Collections of multiple DataArrays with shared dimensions
-- **Selection**: Select data by labels (`sel`) or integer positions (`isel`)
-- **Nearest Neighbor**: Support for `nearest`, `ffill`, and `bfill` selection methods with tolerance
-- **Streaming**: Process large datasets in chunks with progress tracking
-- **Aggregations**: Compute statistics along dimensions (sum, mean)
-- **Type-safe**: Written in TypeScript with full type definitions
-- **Immutable operations**: All operations return new instances
-- **Memory efficient**: Stream large selections without loading everything into memory
+- ✨ **Labeled Arrays**: Named dimensions and coordinates like xarray
+- 🎯 **Smart Selection**: Select by labels with nearest neighbor, forward/backward fill
+- 🌊 **Streaming**: Process massive datasets chunk-by-chunk with progress tracking
+- 📦 **Zarr Support**: Read sharded Zarr stores directly from IPFS
+- 🔒 **Type-Safe**: Full TypeScript support with complete type definitions
+- 💨 **Memory Efficient**: Stream large selections without loading everything
+- 🔄 **Immutable**: All operations return new instances
 
 ## Installation
 
