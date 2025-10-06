@@ -138,8 +138,12 @@ export class Dataset {
   /**
    * Get a data variable
    */
-  getVariable(name: string): DataArray | undefined {
-    return this._dataVars.get(name);
+  getVariable(name: string): DataArray {
+    const variable = this._dataVars.get(name);
+    if (variable === undefined) {
+      throw new Error(`Variable '${name}' not found in dataset`);
+    }
+    return variable;
   }
 
   /**
@@ -198,7 +202,7 @@ export class Dataset {
   /**
    * Select data by integer position
    */
-  isel(selection: { [dimension: string]: number | number[] }): Dataset {
+  async isel(selection: { [dimension: string]: number | number[] }): Promise<Dataset> {
     const newDataVars: { [name: string]: DataArray } = {};
 
     for (const [name, dataArray] of this._dataVars.entries()) {
@@ -210,7 +214,7 @@ export class Dataset {
       }
 
       if (Object.keys(relevantSelection).length > 0) {
-        newDataVars[name] = dataArray.isel(relevantSelection);
+        newDataVars[name] = await dataArray.isel(relevantSelection);
       } else {
         newDataVars[name] = dataArray;
       }
@@ -323,8 +327,6 @@ export class Dataset {
         const coords = this._coords[key];
         
         const dataArray = this._dataVars.get(key);
-        console.log(dataArray);
-        console.log(this.dataVars, "HUKHUKHUK")
         const attrs = this._coordAttrs[key];
 
         const dtype = dataArray ? this._inferDtype(dataArray) : this._inferDtypeFromCoords(coords);
@@ -416,12 +418,10 @@ export class Dataset {
   private _formatCoordPreview(coords: CoordinateValue[], attrs?: Attributes): string {
     if (coords.length === 0) return '[]';
 
-    const formatValue = (val: CoordinateValue) => formatCoordinateValue(val, attrs);
-
     if (coords.length <= 3) {
-      return `[${coords.map(formatValue).join(', ')}]`;
+      return `[${coords.map(val => formatCoordinateValue(val, attrs)).join(', ')}]`;
     }
-    return `[${formatValue(coords[0])}, ${formatValue(coords[1])}, ..., ${formatValue(coords[coords.length - 1])}]`;
+    return `[${formatCoordinateValue(coords[0], attrs)}, ${formatCoordinateValue(coords[1], attrs)}, ..., ${formatCoordinateValue(coords[coords.length - 1], attrs)}]`;
   }
 
   /**

@@ -203,7 +203,7 @@ export class DataArray {
   /**
    * Select data by integer position
    */
-  isel(selection: { [dimension: string]: number | number[] }): DataArray {
+  async isel(selection: { [dimension: string]: number | number[] }): Promise<DataArray> {
     const indexSelection: Selection = {};
     
     for (const [dim, sel] of Object.entries(selection)) {
@@ -216,7 +216,7 @@ export class DataArray {
       }
     }
 
-    return this.sel(indexSelection);
+    return await this.sel(indexSelection);
   }
 
   /**
@@ -360,8 +360,6 @@ export class DataArray {
       }
     }
 
-    // Call the loader function provided by the backend
-    console.log('Calling lazy loader with index ranges:', indexRanges);
     try {
       const data = await loader(indexRanges);
 

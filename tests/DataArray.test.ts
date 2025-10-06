@@ -62,10 +62,10 @@ describe('DataArray', () => {
     });
 
     const selected = da.sel({ x: 30 });
-    expect(selected.data).toBe(3);
+    expect(selected).toBe(3);
   });
 
-  test('should select multiple values using sel()', () => {
+  test('should select multiple values using sel()', async () => {
     const data = [1, 2, 3, 4, 5];
     const da = new DataArray(data, {
       dims: ['x'],
@@ -74,11 +74,11 @@ describe('DataArray', () => {
       }
     });
 
-    const selected = da.sel({ x: [10, 30, 50] });
+    const selected = await da.sel({ x: [10, 30, 50] });
     expect(selected.data).toEqual([1, 3, 5]);
   });
 
-  test('should slice data using sel()', () => {
+  test('should slice data using sel()', async () => {
     const data = [1, 2, 3, 4, 5];
     const da = new DataArray(data, {
       dims: ['x'],
@@ -87,15 +87,15 @@ describe('DataArray', () => {
       }
     });
 
-    const selected = da.sel({ x: { start: 20, stop: 40 } });
+    const selected = await da.sel({ x: { start: 20, stop: 40 } });
     expect(selected.data).toEqual([2, 3, 4]);
   });
 
-  test('should select by integer position using isel()', () => {
+  test('should select by integer position using isel()', async () => {
     const data = [1, 2, 3, 4, 5];
     const da = new DataArray(data, { dims: ['x'] });
 
-    const selected = da.isel({ x: 2 });
+    const selected = await da.isel({ x: 2 });
     expect(selected.data).toBe(3);
   });
 

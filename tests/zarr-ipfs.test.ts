@@ -19,22 +19,16 @@ describe('Dataset.open_zarr with IPFS', () => {
     expect(ds.dataVars.length).toBeGreaterThan(0);
     expect(ds.dims.length).toBeGreaterThan(0);
 
-    // Print the dataset structure
-    console.log(ds);
-    console.log('Variables:', ds.dataVars);
-    console.log('Dimensions:', ds.dims);
-    console.log('Sizes:', ds.sizes);
+
 
     // Print each variable's info
     for (const varName of ds.dataVars) {
       const variable = ds.getVariable(varName);
-      if (variable) {
-        console.log(`\n${varName}:`, {
-          dims: variable.dims,
-          shape: variable.shape,
-          attrs: variable.attrs,
-        });
-      }
+      console.log(`\n${varName}:`, {
+        dims: variable.dims,
+        shape: variable.shape,
+        attrs: variable.attrs,
+      });
     }
 
     // Select a specific location and time

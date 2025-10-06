@@ -239,8 +239,6 @@ export class ZarrBackend {
         coordAttrs[arr.name] = arr.attrs;
       }
     }
-    console.log('Loaded coords:', coords);
-    console.log('Coord attrs:', coordAttrs);
 
     // ---- Build DataArrays for data variables (lazy - store metadata only) ----
     // For now, just return the Dataset with variable info in attrs
@@ -276,8 +274,6 @@ export class ZarrBackend {
       // Create a lazy loader function that the DataArray can call
       const lazyLoader = async (indexRanges: { [dim: string]: { start: number; stop: number } | number }) => {
         const arrNode = await zarr.open(zarrGroup.resolve(arr.name), { kind: 'array'});
-        console.log(arrNode, "ARRNODE");
-
         // Build zarr selection
         const zarrSelection: (number | any | null)[] = [];
         for (const dim of arr.dims) {
@@ -290,7 +286,6 @@ export class ZarrBackend {
             zarrSelection.push(null);
           }
         }
-        console.log('Zarr selection:', zarrSelection, arrNode);
 
         // Get data from zarr
         const result = await zarr.get(arrNode, zarrSelection);
