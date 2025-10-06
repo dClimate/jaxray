@@ -4,7 +4,7 @@ import { CID } from "multiformats/cid";
 import { Dataset } from "../Dataset";
 import { DataArray } from "../DataArray";
 import { ShardedStore, IPFSELEMENTS_INTERFACE } from "./sharded-store";
-import { createIpfsElements } from "./ipfs-elements";
+import { createIpfsElements } from "./ipfs/ipfs-elements";
 import { reshape } from "../utils";
 import { DataValue } from "../types";
 
