@@ -160,16 +160,39 @@ export class Dataset {
       return this.getVariable(key);
     } else if (Array.isArray(key)) {
       const newDataVars: { [name: string]: DataArray } = {};
+      const usedDims = new Set<DimensionName>();
+
+      // Collect all dimensions used by selected variables
       for (const varName of key) {
         if (!this.hasVariable(varName)) {
           throw new Error(`Variable '${varName}' not found in dataset`);
         }
-        newDataVars[varName] = this._dataVars.get(varName)!;
+        const variable = this._dataVars.get(varName)!;
+        newDataVars[varName] = variable;
+
+        // Add all dimensions from this variable
+        for (const dim of variable.dims) {
+          usedDims.add(dim);
+        }
       }
+
+      // Only include coordinates that are used by the selected variables
+      const newCoords: Coordinates = {};
+      const newCoordAttrs: { [name: string]: Attributes } = {};
+
+      for (const dim of usedDims) {
+        if (this._coords[dim]) {
+          newCoords[dim] = this._coords[dim];
+          if (this._coordAttrs[dim]) {
+            newCoordAttrs[dim] = this._coordAttrs[dim];
+          }
+        }
+      }
+
       return new Dataset(newDataVars, {
-        coords: this._coords,
+        coords: newCoords,
         attrs: this._attrs,
-        coordAttrs: this._coordAttrs
+        coordAttrs: newCoordAttrs
       });
     }
     throw new Error('Key must be a string or array of strings');

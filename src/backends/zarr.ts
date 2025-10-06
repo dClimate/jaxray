@@ -5,6 +5,8 @@ import { Dataset } from "../Dataset";
 import { DataArray } from "../DataArray";
 import { ShardedStore, IPFSELEMENTS_INTERFACE } from "./sharded-store";
 import { createIpfsElements } from "./ipfs-elements";
+import { reshape } from "../utils";
+import { DataValue } from "../types";
 
 // Types you already declared:
 export interface ZarrStore {
@@ -44,37 +46,6 @@ function dirname(path: string): string {
   return idx === -1 ? "" : p.slice(0, idx);
 }
 
-/**
- * Decide if an array is a coordinate variable:
- * - 1D
- * - Its "name" equals a dimension name that appears in at least one data variable
- *   (we determine dims after loading all arrays; first pass: load all arrays and remember shapes; second pass: classify)
- * As a pragmatic default (to allow coords to seed dims), we also treat any 1D array whose name equals its *own* dim name.
- */
-function isCoordinateCandidate(name: string, meta: ZarrMetadata[string]): boolean {
-  if (!meta?.shape || meta.shape.length !== 1) return false;
-  const dimNames = Array.isArray(meta.dimension_names) ? meta.dimension_names : [];
-  return dimNames.length === 1 ? (name === dimNames[0]) : true; // prefer strict match, else candidate
-}
-
-/**
- * Build an empty nested array structure matching the dimensionality
- * @param ndim - Number of dimensions (not shape array)
- * Returns nested empty arrays: [] for 1D, [[]] for 2D, [[[]]] for 3D, etc.
- */
-function buildEmptyArray(ndim: number): any {
-  if (ndim === 0) return [];
-  if (ndim === 1) return [];
-  if (ndim === 2) return [[]];
-  if (ndim === 3) return [[[]]];
-
-  // For higher dimensions, nest recursively
-  let result: any = [];
-  for (let i = 1; i < ndim; i++) {
-    result = [result];
-  }
-  return result;
-}
 
 export class ZarrBackend {
   /**
@@ -188,14 +159,7 @@ export class ZarrBackend {
     }
 
     // ---- Heuristic: identify coordinate variables ----
-    // First, gather all candidate 1D arrays
-    const coordCandidates = new Set(
-      arrayMetadata
-        .filter((a) => isCoordinateCandidate(a.name, a.meta))
-        .map((a) => a.name)
-    );
-
-    // Next, infer global dims from any non-1D arrays or arrays with attributes marking them as data
+    // Infer global dims from any non-1D arrays or arrays with attributes marking them as data
     const dataLike = arrayMetadata.filter((a) => a.shape.length !== 1);
     const hasDataVars = dataLike.length > 0;
     const globalDims = new Set<string>();
@@ -304,10 +268,10 @@ export class ZarrBackend {
         }
 
         // Handle array result
-        const flatData = Array.from(result.data || result);
+        const flatData = Array.from(result.data || result) as DataValue[];
 
-        // Reshape to nested array
-        return ZarrBackend._reshapeFromFlat(flatData, resultShape);
+        // Reshape to nested array using utility function
+        return reshape(flatData, resultShape);
       };
 
       dataVars[arr.name] = new DataArray(null, {
@@ -365,19 +329,4 @@ export class ZarrBackend {
     });
   }
 
-  private static _reshapeFromFlat(flat: any[], shape: number[]): any {
-    if (shape.length === 0) return flat[0];
-    if (shape.length === 1) return flat;
-
-    const [first, ...rest] = shape;
-    const size = rest.reduce((a, b) => a * b, 1);
-    const result: any[] = [];
-
-    for (let i = 0; i < first; i++) {
-      const slice = flat.slice(i * size, (i + 1) * size);
-      result.push(this._reshapeFromFlat(slice, rest));
-    }
-
-    return result;
-  }
 }
