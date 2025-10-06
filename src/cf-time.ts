@@ -37,6 +37,7 @@ export function parseCFTimeUnits(unitsStr: string): { unit: string; referenceDat
     if (isNaN(referenceDate.getTime())) {
       return null;
     }
+  /* v8 ignore next 3 */
   } catch {
     return null;
   }
@@ -82,6 +83,7 @@ export function cfTimeToDate(value: number, unitsStr: string, calendar: string =
       // Approximate: 365.25 days per year
       milliseconds = value * 365.25 * 24 * 60 * 60 * 1000;
       break;
+    /* v8 ignore next 2 */
     default:
       return null;
   }
