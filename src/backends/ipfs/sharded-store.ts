@@ -6,6 +6,7 @@ import { AsyncReadable } from "zarrita";
 import * as dagCbor from "@ipld/dag-cbor";
 import { concat as uint8ArrayConcat } from "uint8arrays/concat";
 import all from "it-all";
+import { CID } from "multiformats/cid";
 
 // #region Utility Types and Interfaces
 
@@ -13,12 +14,12 @@ export interface IPFSELEMENTS_INTERFACE {
     dagCbor: {
         components: {
             blockstore: {
-                get: (cid: string) => Promise<Uint8Array>;
+                get: (cid: string | CID) => Promise<Uint8Array>;
             };
         };
     };
     unixfs: {
-        cat: (cid: string) => AsyncIterable<Uint8Array>;
+        cat: (cid: string | CID) => AsyncIterable<Uint8Array>;
     };
 }
 
@@ -105,7 +106,14 @@ export class ShardedStore implements AsyncReadable {
 
     private async loadRootFromCid() {
         // The root object itself is a DAG-CBOR block.
-        const rootBytes = await this.ipfsElements.dagCbor.components.blockstore.get(this.rootCid);
+        // if type string, parse to CID
+        let rootCid: CID;
+        if (typeof this.rootCid === "string") {
+            rootCid = CID.parse(this.rootCid);
+        } else {
+            rootCid = this.rootCid;
+        }
+        const rootBytes = await this.ipfsElements.dagCbor.components.blockstore.get(rootCid);
         const rootObj = dagCbor.decode<ShardedRoot>(rootBytes);
 
         if (rootObj?.manifest_version !== "sharded_zarr_v1") {
@@ -294,11 +302,10 @@ export class ShardedStore implements AsyncReadable {
         if (this.pendingShardLoads.has(shardIdx)) {
             return this.pendingShardLoads.get(shardIdx)!;
         }
-
         const loadPromise = (async () => {
             try {
-                // Fetch the raw bytes of the DAG-CBOR block.
-                const shardBlockBytes = await this.ipfsElements.dagCbor.components.blockstore.get(shardCid);
+                const shardCidObj = CID.parse(shardCid);
+                const shardBlockBytes = await this.ipfsElements.dagCbor.components.blockstore.get(shardCidObj);
                 // Decode it into a list of CIDs/nulls.
                 const decodedShard = dagCbor.decode<(string | null)[]>(shardBlockBytes);
 

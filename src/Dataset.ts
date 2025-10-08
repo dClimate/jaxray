@@ -16,8 +16,8 @@ import {
   StreamOptions,
   StreamChunk
 } from './types';
-import { deepClone } from './utils';
-import { formatCoordinateValue } from './cf-time';
+import { deepClone, getBytesPerElement } from './utils';
+import { formatCoordinateValue, isTimeCoordinate } from './cf-time';
 import { ZarrBackend } from './backends/zarr';
 
 export class Dataset {
@@ -25,6 +25,7 @@ export class Dataset {
   private _coords: Coordinates;
   private _attrs: Attributes;
   private _coordAttrs: { [coordName: string]: Attributes };
+  private _precision: number = 6;
 
   constructor(
     dataVars: { [name: string]: DataArray } = {},
@@ -32,7 +33,15 @@ export class Dataset {
   ) {
     this._dataVars = new Map();
     this._attrs = options.attrs || {};
-    this._coords = options.coords || {};
+    // Round numeric coordinates to specified precision
+    this._coords = {};
+    if (options.coords) {
+      for (const [dim, coords] of Object.entries(options.coords)) {
+        this._coords[dim] = coords.map(c =>
+          typeof c === 'number' ? this._roundPrecision(c) : c
+        );
+      }
+    }
     this._coordAttrs = options.coordAttrs || {};
 
     // Add data variables
@@ -68,6 +77,10 @@ export class Dataset {
    */
   get coords(): Coordinates {
     return deepClone(this._coords);
+  }
+
+  get coordAttrs(): { [coordName: string]: Attributes } {
+    return deepClone(this._coordAttrs);
   }
 
   /**
@@ -130,12 +143,23 @@ export class Dataset {
       if (!this._coords[dim]) {
         const dataArrayCoords = dataArray.coords;
         if (dataArrayCoords[dim]) {
-          this._coords[dim] = dataArrayCoords[dim];
+          // Round numeric coordinates to specified precision
+          this._coords[dim] = dataArrayCoords[dim].map(c =>
+            typeof c === 'number' ? this._roundPrecision(c) : c
+          );
         }
       }
     }
 
     this._dataVars.set(name, dataArray);
+  }
+
+  /**
+   * Round a number to the specified precision
+   */
+  private _roundPrecision(value: number): number {
+    const factor = Math.pow(10, this._precision);
+    return Math.round(value * factor) / factor;
   }
 
   /**
@@ -331,7 +355,7 @@ export class Dataset {
           }
         }
       }
-
+ 
       yield {
         data: new Dataset(newDataVars, {
           coords: newCoords,
@@ -450,6 +474,135 @@ export class Dataset {
    */
   toJSON(): string {
     return JSON.stringify(this.toObject());
+  }
+
+  /**
+   * Convert a data variable to an array of records with coordinates and values
+   * Each record contains coordinate values and the data value for that point
+   *
+   * @param varName - Name of the variable to convert to records
+   * @param options - Optional configuration
+   * @param options.precision - Number of decimal places to round coordinate values (default: 6)
+   * @returns Array of records with coordinate fields and a value field
+   *
+   * @example
+   * ```typescript
+   * // For a variable 'temperature' with dims ['time', 'lat', 'lon']
+   * dataset.toRecords('temperature')
+   * // Returns:
+   * // [
+   * //   { time: '2020-01-01', lat: 45.5, lon: -73.5, value: 23.4 },
+   * //   { time: '2020-01-01', lat: 45.5, lon: -74.0, value: 24.1 },
+   * //   ...
+   * // ]
+   *
+   * // With custom precision
+   * dataset.toRecords('temperature', { precision: 2 })
+   * // Returns:
+   * // [
+   * //   { time: '2020-01-01', lat: 45.50, lon: -73.50, value: 23.4 },
+   * //   ...
+   * // ]
+   * ```
+   */
+  toRecords(varName: string, options?: { precision?: number }): Array<Record<string, any>> {
+    const dataArray = this.getVariable(varName);
+    return dataArray.toRecords(options);
+  }
+
+  /**
+   * Calculate and store resolution information for all coordinates in coordAttrs
+   * For spatial coordinates (lat/lon), stores numeric resolution (e.g., 0.1 degrees)
+   * For time coordinates, stores both numeric and human-readable resolution (e.g., "daily")
+   *
+   * @returns Object mapping dimension names to their resolution info
+   *
+   * @example
+   * ```typescript
+   * const resolutions = dataset.calculateCoordinateResolutions();
+   * // Returns:
+   * // {
+   * //   latitude: { resolution: 0.1, unit: 'degrees' },
+   * //   longitude: { resolution: 0.1, unit: 'degrees' },
+   * //   time: { resolution: 1, type: 'daily', unit: 'days' }
+   * // }
+   * // Also updates dataset.coordAttrs with resolution info
+   * ```
+   */
+  calculateCoordinateResolutions(): { [dim: string]: any } {
+    const resolutions: { [dim: string]: any } = {};
+
+    for (const dim of this.dims) {
+      const coords = this._coords[dim];
+
+      if (!coords || coords.length < 2) {
+        continue;
+      }
+
+      // Check if this is a time coordinate
+      const dimAttrs = this._coordAttrs[dim] || {};
+      const isTime = isTimeCoordinate(dimAttrs);
+
+      if (isTime) {
+        // Use the DataArray's calculateTimeResolution method
+        // Find a variable that has this time dimension
+        for (const dataArray of this._dataVars.values()) {
+          if (dataArray.dims.includes(dim)) {
+            const timeResolution = dataArray.calculateTimeResolution(dim);
+            if (timeResolution) {
+              resolutions[dim] = timeResolution;
+
+              // Store in coordAttrs
+              if (!this._coordAttrs[dim]) {
+                this._coordAttrs[dim] = {};
+              }
+              this._coordAttrs[dim].resolution = timeResolution.value;
+              this._coordAttrs[dim].resolution_type = timeResolution.type;
+              this._coordAttrs[dim].resolution_unit = timeResolution.unit;
+
+              break;
+            }
+          }
+        }
+      } else {
+        // For spatial coordinates, calculate numeric resolution
+        const first = coords[0];
+        const second = coords[1];
+
+        if (typeof first === 'number' && typeof second === 'number') {
+          const resolution = Math.abs(second - first);
+
+          // Round to avoid floating-point errors
+          const roundedResolution = Math.round(resolution * 1000000) / 1000000;
+
+          // Determine unit based on dimension name
+          let unit = 'unknown';
+          const dimLower = dim.toLowerCase();
+          if (dimLower.includes('lat') || dimLower === 'y') {
+            unit = 'degrees_north';
+          } else if (dimLower.includes('lon') || dimLower === 'x') {
+            unit = 'degrees_east';
+          } else {
+            // Try to get unit from coordAttrs
+            unit = dimAttrs.units || 'unknown';
+          }
+
+          resolutions[dim] = {
+            resolution: roundedResolution,
+            unit: unit
+          };
+
+          // Store in coordAttrs
+          if (!this._coordAttrs[dim]) {
+            this._coordAttrs[dim] = {};
+          }
+          this._coordAttrs[dim].resolution = roundedResolution;
+          this._coordAttrs[dim].resolution_unit = unit;
+        }
+      }
+    }
+
+    return resolutions;
   }
 
   /**
@@ -577,6 +730,55 @@ export class Dataset {
    */
   [Symbol.for('nodejs.util.inspect.custom')]?(): string {
     return this.toString();
+  }
+
+  /**
+   * Estimate the size in bytes of a selection for a given variable
+   * Useful for checking data size before downloading
+   *
+   * @param varName - Name of the variable
+   * @param selection - Selection object with dimension names and ranges/indices
+   * @returns Estimated size in bytes
+   */
+  getSizeEstimation(
+    varName: string,
+    selection?: { [dim: string]: number | { start: number; stop: number } | [number, number] }
+  ): number {
+    const dataArray = this.getVariable(varName);
+
+    // Get bytes per element from data type in attrs
+    const dataType = dataArray.attrs._zarr_data_type as string | undefined;
+    const bytesPerElement = getBytesPerElement(dataType);
+
+    if (!selection) {
+      // Return full array size
+      return dataArray.size * bytesPerElement;
+    }
+
+    // Calculate size based on selection
+    let totalElements = 1;
+
+    for (let i = 0; i < dataArray.dims.length; i++) {
+      const dim = dataArray.dims[i];
+      const dimSize = dataArray.shape[i];
+      const sel = selection[dim];
+
+      if (sel === undefined || sel === null) {
+        // No selection on this dimension - use full size
+        totalElements *= dimSize;
+      } else if (typeof sel === 'number') {
+        // Single index - this dimension contributes 1
+        totalElements *= 1;
+      } else if (Array.isArray(sel)) {
+        // Array [start, stop]
+        totalElements *= (sel[1] - sel[0]);
+      } else if (typeof sel === 'object' && 'start' in sel && 'stop' in sel) {
+        // Range object {start, stop}
+        totalElements *= (sel.stop - sel.start);
+      }
+    }
+
+    return totalElements * bytesPerElement;
   }
 
   /**

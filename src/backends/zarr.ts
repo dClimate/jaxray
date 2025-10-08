@@ -20,6 +20,7 @@ export interface ZarrMetadata {
     attributes?: { [key: string]: any };
     chunk_grid?: { configuration: { chunk_shape: number[] } };
     node_type?: "array" | "group";
+    data_type?: string;
     // ... other v3 bits
   };
 }
@@ -261,6 +262,7 @@ export class ZarrBackend {
           _zarr_shape: arr.shape,  // Store actual shape
           _zarr_coords: perDimCoords, // Store coords here
           _coordAttrs: coordAttrs, // Store coordinate attributes for time conversion
+          _zarr_data_type: arr.meta.data_type, // Store data type for byte size calculation
           _lazy: true,
           _lazyLoader: lazyLoader, // Provide loader function
         },

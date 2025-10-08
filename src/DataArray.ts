@@ -26,6 +26,7 @@ export class DataArray {
   private _attrs: Attributes;
   private _name?: string;
   private _shape: number[];
+  private _precision: number = 6;
 
   constructor(data: NDArray, options: DataArrayOptions = {}) {
     if (options.lazy) {
@@ -37,7 +38,14 @@ export class DataArray {
       this._dims = options.dims ? [...options.dims] : this._shape.map((_, i) => `dim_${i}`);
       // coords: do NOT enforce lengths; just store if provided, else generate index arrays by size
       this._coords = {};
-      if (options.coords) this._coords = deepClone(options.coords);
+      if (options.coords) {
+        // Deep clone and round numeric coordinates
+        for (const [dim, coords] of Object.entries(options.coords)) {
+          this._coords[dim] = coords.map(c =>
+            typeof c === 'number' ? this._roundPrecision(c) : c
+          );
+        }
+      }
       for (let i = 0; i < this._dims.length; i++) {
         const d = this._dims[i];
         if (!this._coords[d]) this._coords[d] = Array.from({ length: this._shape[i] }, (_, j) => j);
@@ -76,7 +84,10 @@ export class DataArray {
             `Coordinate '${dim}' length (${coords.length}) does not match dimension size (${this._shape[dimIndex]})`
           );
         }
-        this._coords[dim] = [...coords];
+        // Round numeric coordinates to specified precision
+        this._coords[dim] = coords.map(c =>
+          typeof c === 'number' ? this._roundPrecision(c) : c
+        );
       }
     }
 
@@ -436,6 +447,380 @@ export class DataArray {
    */
   toJSON(): string {
     return JSON.stringify(this.toObject());
+  }
+
+  /**
+   * Convert to an array of records with coordinates and values
+   * Each record contains coordinate values and the data value
+   * Time coordinates are automatically converted to ISO datetime strings
+   * Numeric coordinates are rounded to avoid floating-point precision errors
+   *
+   * @param options - Optional configuration
+   * @param options.precision - Number of decimal places to round coordinate values (default: 6)
+   *
+   * @example
+   * ```typescript
+   * // For a 2D array with dims ['time', 'lat']
+   * dataArray.toRecords()
+   * // Returns:
+   * // [
+   * //   { time: '2020-01-01T00:00:00', lat: 45.5, value: 23.4 },
+   * //   { time: '2020-01-02T00:00:00', lat: 46.0, value: 24.1 },
+   * //   ...
+   * // ]
+   *
+   * // Custom precision
+   * dataArray.toRecords({ precision: 2 })
+   * // [
+   * //   { time: '2020-01-01T00:00:00', lat: 45.50, lon: -73.25, value: 23.4 },
+   * //   ...
+   * // ]
+   * ```
+   */
+  toRecords(options?: { precision?: number }): Array<Record<string, any>> {
+    const precision = options?.precision !== undefined ? options.precision : 6;
+    const records: Array<Record<string, any>> = [];
+    const flatData = flatten(this._data);
+
+    // Helper function to round numbers
+    const round = (value: number): number => {
+      const factor = Math.pow(10, precision);
+      return Math.round(value * factor) / factor;
+    };
+
+    // Pre-check which dimensions are time coordinates
+    const timeCoordInfo: { [dim: string]: string } = {};
+    const coordAttrs = (this._attrs as any)?._coordAttrs;
+
+    for (const dim of this._dims) {
+      const dimAttrs = coordAttrs?.[dim] || this._attrs;
+      if (isTimeCoordinate(dimAttrs)) {
+        const units = dimAttrs?.units as string | undefined;
+        if (units) {
+          timeCoordInfo[dim] = units;
+        }
+      }
+    }
+
+    // Calculate indices for each element in the flattened array
+    const totalElements = flatData.length;
+
+    for (let i = 0; i < totalElements; i++) {
+      const record: Record<string, any> = {};
+
+      // Calculate multi-dimensional indices
+      let remaining = i;
+      const indices: number[] = [];
+
+      for (let d = this._dims.length - 1; d >= 0; d--) {
+        const dimSize = this._shape[d];
+        indices[d] = remaining % dimSize;
+        remaining = Math.floor(remaining / dimSize);
+      }
+
+      // Add coordinate values to record
+      for (let d = 0; d < this._dims.length; d++) {
+        const dim = this._dims[d];
+        const coordIndex = indices[d];
+        let coordValue = this._coords[dim][coordIndex];
+
+        // Convert time coordinates to datetime strings
+        if (timeCoordInfo[dim] && typeof coordValue === 'number') {
+          const units = timeCoordInfo[dim];
+          const date = parseCFTimeUnits(units);
+          if (date) {
+            const convertedDate = this._convertCFTimeToDate(coordValue, date.unit, date.referenceDate);
+            if (convertedDate) {
+              coordValue = convertedDate.toISOString();
+            }
+          }
+        } else if (typeof coordValue === 'number') {
+          // Round numeric coordinates to avoid floating-point precision errors
+          coordValue = round(coordValue);
+        }
+
+        record[dim] = coordValue;
+      }
+
+      // Add data value
+      record.value = flatData[i];
+
+      records.push(record);
+    }
+
+    return records;
+  }
+
+  /**
+   * Convert CF time value to Date
+   * Helper method for toRecords
+   */
+  private _convertCFTimeToDate(value: number, unit: string, referenceDate: Date): Date | null {
+    const refTime = referenceDate.getTime();
+    let milliseconds: number;
+
+    switch (unit) {
+      case 'second':
+        milliseconds = value * 1000;
+        break;
+      case 'minute':
+        milliseconds = value * 60 * 1000;
+        break;
+      case 'hour':
+        milliseconds = value * 60 * 60 * 1000;
+        break;
+      case 'day':
+        milliseconds = value * 24 * 60 * 60 * 1000;
+        break;
+      case 'week':
+        milliseconds = value * 7 * 24 * 60 * 60 * 1000;
+        break;
+      case 'month':
+        milliseconds = value * 30 * 24 * 60 * 60 * 1000;
+        break;
+      case 'year':
+        milliseconds = value * 365.25 * 24 * 60 * 60 * 1000;
+        break;
+      default:
+        return null;
+    }
+
+    return new Date(refTime + milliseconds);
+  }
+
+  /**
+   * Get the bounding box for spatial coordinates
+   * @param options - Optional configuration
+   * @param options.latDim - Name of the latitude dimension (defaults to 'latitude' or 'lat')
+   * @param options.lonDim - Name of the longitude dimension (defaults to 'longitude' or 'lon')
+   * @param options.precision - Number of decimal places to round to (default: 6, set to null for no rounding)
+   * @returns Bounding box with min/max lat/lon, or undefined if spatial dims not found
+   *
+   * @example
+   * ```typescript
+   * const bounds = dataArray.getBounds();
+   * // Returns: { latMin: 30, latMax: 50, lonMin: -120, lonMax: -70 }
+   *
+   * const bounds = dataArray.getBounds({ precision: 2 });
+   * // Returns: { latMin: 30.12, latMax: 50.45, lonMin: -120.34, lonMax: -70.89 }
+   * ```
+   */
+  getBounds(options?: { latDim?: string; lonDim?: string; precision?: number | null }): { latMin: number; latMax: number; lonMin: number; lonMax: number } | undefined {
+    const precision = options?.precision !== undefined ? options.precision : 6;
+
+    // Auto-detect latitude dimension
+    const latDimName = options?.latDim ||
+      this._dims.find(d => d === 'latitude' || d === 'lat' || d === 'y');
+
+    // Auto-detect longitude dimension
+    const lonDimName = options?.lonDim ||
+      this._dims.find(d => d === 'longitude' || d === 'lon' || d === 'x');
+
+    if (!latDimName || !lonDimName) {
+      return undefined;
+    }
+
+    const latCoords = this._coords[latDimName];
+    const lonCoords = this._coords[lonDimName];
+
+    if (!latCoords || !lonCoords || latCoords.length === 0 || lonCoords.length === 0) {
+      return undefined;
+    }
+
+    const latValues = latCoords.filter(v => typeof v === 'number') as number[];
+    const lonValues = lonCoords.filter(v => typeof v === 'number') as number[];
+
+    if (latValues.length === 0 || lonValues.length === 0) {
+      return undefined;
+    }
+
+    const round = (value: number): number => {
+      if (precision === null) return value;
+      const factor = Math.pow(10, precision);
+      return Math.round(value * factor) / factor;
+    };
+
+    return {
+      latMin: round(Math.min(...latValues)),
+      latMax: round(Math.max(...latValues)),
+      lonMin: round(Math.min(...lonValues)),
+      lonMax: round(Math.max(...lonValues))
+    };
+  }
+
+  /**
+   * Round a number to the specified precision
+   */
+  private _roundPrecision(value: number): number {
+    const factor = Math.pow(10, this._precision);
+    return Math.round(value * factor) / factor;
+  }
+
+  /**
+   * Calculate and determine the time resolution from the time coordinate
+   * Automatically detects if data is hourly, daily, weekly, monthly, yearly, etc.
+   * Uses CF-time utilities to properly handle time units
+   * Stores resolution info in attrs
+   *
+   * @param timeDim - Name of the time dimension (defaults to 'time')
+   * @returns Object with resolution value and type, or undefined if cannot be determined
+   *
+   * @example
+   * ```typescript
+   * const result = dataArray.calculateTimeResolution();
+   * // Returns: { value: 1, type: 'daily', unit: 'days' }
+   * // attrs.time_resolution = 1
+   * // attrs.time_resolution_type = 'daily'
+   * // attrs.time_resolution_unit = 'days'
+   * ```
+   */
+  calculateTimeResolution(timeDim: string = 'time'): { value: number; type: string; unit: string } | undefined {
+    if (!this._dims.includes(timeDim)) {
+      return undefined;
+    }
+
+    const timeCoords = this._coords[timeDim];
+    if (!timeCoords || timeCoords.length < 2) {
+      return undefined;
+    }
+
+    const first = timeCoords[0];
+    const second = timeCoords[1];
+
+    if (typeof first !== 'number' || typeof second !== 'number') {
+      return undefined;
+    }
+
+    const resolution = Math.abs(second - first);
+
+    // Get coordinate attributes to determine the time unit
+    const coordAttrs = (this._attrs as any)?._coordAttrs;
+    const dimAttrs = coordAttrs?.[timeDim] || this._attrs;
+    const unitsStr = dimAttrs?.units as string | undefined;
+
+    // Parse CF time units to get base unit
+    let baseUnit = 'seconds';
+    if (unitsStr) {
+      const parsed = parseCFTimeUnits(unitsStr);
+      if (parsed) {
+        baseUnit = parsed.unit;
+      }
+    }
+
+    // Determine resolution type based on value and base unit
+    let type: string;
+    let outputUnit: string;
+    let outputValue: number = resolution;
+
+    const tolerance = 0.1;
+
+    // Check for common patterns based on base unit
+    if (baseUnit === 'second') {
+      if (Math.abs(resolution - 3600) / 3600 < tolerance) {
+        type = 'hourly';
+        outputUnit = 'hours';
+        outputValue = resolution / 3600;
+      } else if (Math.abs(resolution - 10800) / 10800 < tolerance) {
+        type = '3-hourly';
+        outputUnit = 'hours';
+        outputValue = resolution / 3600;
+      } else if (Math.abs(resolution - 21600) / 21600 < tolerance) {
+        type = '6-hourly';
+        outputUnit = 'hours';
+        outputValue = resolution / 3600;
+      } else if (Math.abs(resolution - 86400) / 86400 < tolerance) {
+        type = 'daily';
+        outputUnit = 'days';
+        outputValue = resolution / 86400;
+      } else {
+        type = 'custom';
+        outputUnit = 'seconds';
+      }
+    } else if (baseUnit === 'minute') {
+      if (Math.abs(resolution - 60) / 60 < tolerance) {
+        type = 'hourly';
+        outputUnit = 'hours';
+        outputValue = resolution / 60;
+      } else if (Math.abs(resolution - 1440) / 1440 < tolerance) {
+        type = 'daily';
+        outputUnit = 'days';
+        outputValue = resolution / 1440;
+      } else {
+        type = 'custom';
+        outputUnit = 'minutes';
+      }
+    } else if (baseUnit === 'hour') {
+      if (Math.abs(resolution - 1) < tolerance) {
+        type = 'hourly';
+        outputUnit = 'hours';
+      } else if (Math.abs(resolution - 3) / 3 < tolerance) {
+        type = '3-hourly';
+        outputUnit = 'hours';
+      } else if (Math.abs(resolution - 6) / 6 < tolerance) {
+        type = '6-hourly';
+        outputUnit = 'hours';
+      } else if (Math.abs(resolution - 24) / 24 < tolerance) {
+        type = 'daily';
+        outputUnit = 'days';
+        outputValue = resolution / 24;
+      } else {
+        type = 'custom';
+        outputUnit = 'hours';
+      }
+    } else if (baseUnit === 'day') {
+      if (Math.abs(resolution - 1) < tolerance) {
+        type = 'daily';
+        outputUnit = 'days';
+      } else if (Math.abs(resolution - 7) / 7 < tolerance) {
+        type = 'weekly';
+        outputUnit = 'days';
+      } else if (Math.abs(resolution - 30) / 30 < tolerance || Math.abs(resolution - 31) / 31 < tolerance) {
+        type = 'monthly';
+        outputUnit = 'months';
+        outputValue = 1;
+      } else if (Math.abs(resolution - 365) / 365 < tolerance || Math.abs(resolution - 366) / 366 < tolerance) {
+        type = 'yearly';
+        outputUnit = 'years';
+        outputValue = 1;
+      } else {
+        type = 'custom';
+        outputUnit = 'days';
+      }
+    } else if (baseUnit === 'month') {
+      if (Math.abs(resolution - 1) < tolerance) {
+        type = 'monthly';
+        outputUnit = 'months';
+      } else if (Math.abs(resolution - 12) / 12 < tolerance) {
+        type = 'yearly';
+        outputUnit = 'years';
+        outputValue = 1;
+      } else {
+        type = 'custom';
+        outputUnit = 'months';
+      }
+    } else if (baseUnit === 'year') {
+      if (Math.abs(resolution - 1) < tolerance) {
+        type = 'yearly';
+        outputUnit = 'years';
+      } else {
+        type = 'custom';
+        outputUnit = 'years';
+      }
+    } else {
+      type = 'custom';
+      outputUnit = baseUnit;
+    }
+
+    // Store in attributes
+    this._attrs.time_resolution = outputValue;
+    this._attrs.time_resolution_type = type;
+    this._attrs.time_resolution_unit = outputUnit;
+
+    return {
+      value: outputValue,
+      type,
+      unit: outputUnit
+    };
   }
 
   // Private helper methods
