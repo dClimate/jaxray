@@ -1,8 +1,4 @@
 node_modules/
-dist/
-*.js
-*.d.ts
-*.map
 !jest.config.js
 .DS_Store
 coverage/
