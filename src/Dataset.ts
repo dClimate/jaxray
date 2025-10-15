@@ -16,7 +16,7 @@ import {
   StreamOptions,
   StreamChunk
 } from './types';
-import { deepClone, getBytesPerElement } from './utils';
+import { deepClone, getBytesPerElement, ZARR_ENCODINGS } from './utils';
 import { formatCoordinateValue, isTimeCoordinate } from './cf-time';
 import { ZarrBackend } from './backends/zarr';
 
@@ -26,6 +26,7 @@ export class Dataset {
   private _attrs: Attributes;
   private _coordAttrs: { [coordName: string]: Attributes };
   private _precision: number = 6;
+  private _isEncrypted: boolean = false;
 
   constructor(
     dataVars: { [name: string]: DataArray } = {},
@@ -88,6 +89,13 @@ export class Dataset {
    */
   get attrs(): Attributes {
     return deepClone(this._attrs);
+  }
+
+  /**
+   * Check if the dataset contains encrypted data
+   */
+  get isEncrypted(): boolean {
+    return this._isEncrypted;
   }
 
   /**
@@ -448,6 +456,28 @@ export class Dataset {
       attrs: newAttrs,
       coordAttrs: newCoordAttrs
     });
+  }
+
+  /**
+   * Detect if any data variables use encryption codecs
+   * Checks the codecs in the attributes of each data variable
+   * @returns true if encryption is detected, false otherwise
+   */
+  detectEncryption(): boolean {
+    for (const dataArray of this._dataVars.values()) {
+      const codecs = dataArray.attrs.codecs;
+      if (codecs && Array.isArray(codecs)) {
+        for (const codec of codecs) {
+          if (codec && codec.name && ZARR_ENCODINGS.has(codec.name)) {
+            this._isEncrypted = true;
+            return true;
+          }
+        }
+      }
+    }
+
+    this._isEncrypted = false;
+    return false;
   }
 
   /**

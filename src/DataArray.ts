@@ -926,6 +926,9 @@ export class DataArray {
     const method = options?.method;
     const tolerance = options?.tolerance;
 
+    // Convert value to numeric for arithmetic lookup
+    let numericValue: number;
+
     // Handle time coordinate conversion for string dates
     if (typeof value === 'string') {
       // Get coordinate-specific attributes
@@ -954,51 +957,126 @@ export class DataArray {
             const { unit, referenceDate } = parsed;
             const timeDiff = inputDate.getTime() - referenceDate.getTime();
 
-            let targetValue: number;
             switch (unit) {
               case 'second':
-                targetValue = timeDiff / 1000;
+                numericValue = timeDiff / 1000;
                 break;
               case 'minute':
-                targetValue = timeDiff / (60 * 1000);
+                numericValue = timeDiff / (60 * 1000);
                 break;
               case 'hour':
-                targetValue = timeDiff / (60 * 60 * 1000);
+                numericValue = timeDiff / (60 * 60 * 1000);
                 break;
               case 'day':
-                targetValue = timeDiff / (24 * 60 * 60 * 1000);
+                numericValue = timeDiff / (24 * 60 * 60 * 1000);
                 break;
               case 'week':
-                targetValue = timeDiff / (7 * 24 * 60 * 60 * 1000);
+                numericValue = timeDiff / (7 * 24 * 60 * 60 * 1000);
                 break;
               case 'month':
-                targetValue = timeDiff / (30 * 24 * 60 * 60 * 1000);
+                numericValue = timeDiff / (30 * 24 * 60 * 60 * 1000);
                 break;
               case 'year':
-                targetValue = timeDiff / (365.25 * 24 * 60 * 60 * 1000);
+                numericValue = timeDiff / (365.25 * 24 * 60 * 60 * 1000);
                 break;
               default:
-                targetValue = timeDiff / 1000;
+                numericValue = timeDiff / 1000;
             }
+          } else {
+            // Fallback to indexOf for non-CF time strings
+            return this._findIndexFallback(coords, value, method, tolerance);
+          }
+        } else {
+          // Fallback to indexOf for non-CF time strings
+          return this._findIndexFallback(coords, value, method, tolerance);
+        }
+      } else {
+        // Not a time coordinate but string value - use indexOf
+        return this._findIndexFallback(coords, value, method, tolerance);
+      }
+    } else if (typeof value === 'number') {
+      numericValue = value;
+    } else {
+      // Date or other type - use fallback
+      return this._findIndexFallback(coords, value, method, tolerance);
+    }
 
-            // Find nearest coordinate value
-            let closestIndex = 0;
-            let minDiff = Math.abs((coords[0] as number) - targetValue);
+    // Try arithmetic-based lookup for evenly-spaced numeric coordinates
+    if (coords.length >= 2 && coords.every(c => typeof c === 'number')) {
+      const numCoords = coords as number[];
+      const min = numCoords[0];
+      const step = numCoords.length > 1 ? (numCoords[1] - numCoords[0]) : 1;
 
-            for (let i = 1; i < coords.length; i++) {
-              const diff = Math.abs((coords[i] as number) - targetValue);
-              if (diff < minDiff) {
-                minDiff = diff;
-                closestIndex = i;
-              }
+      // Check if coordinates are evenly spaced (with small tolerance for floating point)
+      const isEvenlySpaced = numCoords.length <= 2 || numCoords.every((coord, i) => {
+        if (i === 0) return true;
+        const expectedValue = min + i * step;
+        return Math.abs(coord - expectedValue) < Math.abs(step) * 1e-6;
+      });
+
+      if (isEvenlySpaced && Math.abs(step) > 1e-10) {
+        // Use arithmetic calculation (O(1) instead of O(n))
+        const rawIndex = (numericValue - min) / step;
+
+        let index: number;
+        switch (method) {
+          case 'nearest':
+            index = Math.round(rawIndex);
+            break;
+          case 'ffill':
+          case 'pad':
+            index = Math.floor(rawIndex);
+            break;
+          case 'bfill':
+          case 'backfill':
+            index = Math.ceil(rawIndex);
+            break;
+          case null:
+          case undefined:
+            // Exact match - check if close to integer
+            const roundedIndex = Math.round(rawIndex);
+            const indexTolerance = tolerance !== undefined ? tolerance / Math.abs(step) : 1e-3;
+            if (Math.abs(rawIndex - roundedIndex) > indexTolerance) {
+              throw new Error(`Coordinate value '${value}' not found in dimension '${dim}' (no exact match)`);
             }
+            index = roundedIndex;
+            break;
+          default:
+            throw new Error(`Unknown method: ${method}`);
+        }
 
-            return closestIndex;
+        // Bounds check
+        if (index < 0 || index >= coords.length) {
+          if (method === 'ffill' || method === 'pad') {
+            throw new Error(`No coordinate <= ${numericValue} for forward fill`);
+          } else if (method === 'bfill' || method === 'backfill') {
+            throw new Error(`No coordinate >= ${numericValue} for backward fill`);
+          } else if (tolerance !== undefined) {
+            throw new Error(`No coordinate within tolerance ${tolerance} of value ${numericValue}`);
+          }
+          throw new Error(`Coordinate value '${value}' out of bounds for dimension '${dim}'`);
+        }
+
+        // Optional: verify tolerance if specified
+        if (tolerance !== undefined) {
+          const actualValue = numCoords[index];
+          if (Math.abs(actualValue - numericValue) > tolerance) {
+            throw new Error(`No coordinate within tolerance ${tolerance} of value ${numericValue}`);
           }
         }
+
+        return index;
       }
     }
 
+    // Fallback to linear search for non-evenly-spaced or non-numeric coordinates
+    return this._findIndexFallback(coords, numericValue, method, tolerance);
+  }
+
+  /**
+   * Fallback method using linear search (original indexOf-based approach)
+   */
+  private _findIndexFallback(coords: CoordinateValue[], value: CoordinateValue, method?: string, tolerance?: number): number {
     // Apply selection method
     if (method === 'nearest') {
       return this._findNearestIndex(coords, value, tolerance);
@@ -1011,7 +1089,7 @@ export class DataArray {
     // Default exact match
     const index = coords.indexOf(value);
     if (index === -1) {
-      throw new Error(`Coordinate value '${value}' not found in dimension '${dim}'`);
+      throw new Error(`Coordinate value '${value}' not found in dimension`);
     }
 
     return index;

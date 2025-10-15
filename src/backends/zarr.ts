@@ -265,6 +265,7 @@ export class ZarrBackend {
           _zarr_data_type: arr.meta.data_type, // Store data type for byte size calculation
           _lazy: true,
           _lazyLoader: lazyLoader, // Provide loader function
+          codecs: arr.meta.codecs, // Store codecs for encryption detection
         },
         name: arr.name,
       });
@@ -300,11 +301,16 @@ export class ZarrBackend {
       } catch {}
     }
 
-    return new Dataset(dataVars, {
+    const dataset = new Dataset(dataVars, {
       coords,
       attrs: datasetAttrs,
       coordAttrs,
     });
+
+    // Automatically detect encryption
+    dataset.detectEncryption();
+
+    return dataset;
   }
 
 }

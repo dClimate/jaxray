@@ -5,6 +5,11 @@
 import { NDArray, DataValue } from './types';
 
 /**
+ * Set of Zarr codec names that indicate encryption
+ */
+export const ZARR_ENCODINGS = new Set(['xchacha20poly1305']);
+
+/**
  * Get byte size for a given data type string
  * @param dataType - Zarr data type string (e.g., 'float32', 'int16', 'uint8')
  * @returns Number of bytes per element

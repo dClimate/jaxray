@@ -321,4 +321,150 @@ describe('Dataset', () => {
       expect(selected.getVariable('pressure').data).toBe(200);
     });
   });
+
+  describe('encryption detection', () => {
+    test('should detect no encryption for dataset without codecs', () => {
+      const temp = new DataArray([1, 2, 3], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] }
+      });
+
+      const ds = new Dataset({ temperature: temp });
+      expect(ds.detectEncryption()).toBe(false);
+      expect(ds.isEncrypted).toBe(false);
+    });
+
+    test('should detect no encryption for dataset with non-encrypted codecs', () => {
+      const temp = new DataArray([1, 2, 3], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] },
+        attrs: {
+          codecs: [
+            { name: 'bytes', configuration: { endian: 'little' } },
+            { name: 'gzip', configuration: { level: 5 } }
+          ]
+        }
+      });
+
+      const ds = new Dataset({ temperature: temp });
+      expect(ds.detectEncryption()).toBe(false);
+      expect(ds.isEncrypted).toBe(false);
+    });
+
+    test('should detect encryption with xchacha20poly1305 codec', () => {
+      const temp = new DataArray([1, 2, 3], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] },
+        attrs: {
+          codecs: [
+            { name: 'bytes', configuration: { endian: 'little' } },
+            { name: 'xchacha20poly1305', configuration: { key: 'encrypted' } }
+          ]
+        }
+      });
+
+      const ds = new Dataset({ temperature: temp });
+      expect(ds.detectEncryption()).toBe(true);
+      expect(ds.isEncrypted).toBe(true);
+    });
+
+    test('should detect encryption in any data variable', () => {
+      const temp = new DataArray([1, 2, 3], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] },
+        attrs: {
+          codecs: [{ name: 'gzip' }]
+        }
+      });
+
+      const pressure = new DataArray([100, 200, 300], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] },
+        attrs: {
+          codecs: [
+            { name: 'bytes' },
+            { name: 'xchacha20poly1305' }
+          ]
+        }
+      });
+
+      const ds = new Dataset({ temperature: temp, pressure: pressure });
+      expect(ds.detectEncryption()).toBe(true);
+      expect(ds.isEncrypted).toBe(true);
+    });
+
+    test('should handle missing codecs array', () => {
+      const temp = new DataArray([1, 2, 3], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] },
+        attrs: {}
+      });
+
+      const ds = new Dataset({ temperature: temp });
+      expect(ds.detectEncryption()).toBe(false);
+      expect(ds.isEncrypted).toBe(false);
+    });
+
+    test('should handle empty codecs array', () => {
+      const temp = new DataArray([1, 2, 3], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] },
+        attrs: {
+          codecs: []
+        }
+      });
+
+      const ds = new Dataset({ temperature: temp });
+      expect(ds.detectEncryption()).toBe(false);
+      expect(ds.isEncrypted).toBe(false);
+    });
+
+    test('should handle codecs without name property', () => {
+      const temp = new DataArray([1, 2, 3], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] },
+        attrs: {
+          codecs: [
+            { type: 'bytes' },
+            { configuration: {} }
+          ]
+        }
+      });
+
+      const ds = new Dataset({ temperature: temp });
+      expect(ds.detectEncryption()).toBe(false);
+      expect(ds.isEncrypted).toBe(false);
+    });
+
+    test('should reset encryption status when re-detecting', () => {
+      const tempEncrypted = new DataArray([1, 2, 3], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] },
+        attrs: {
+          codecs: [{ name: 'xchacha20poly1305' }]
+        }
+      });
+
+      const ds = new Dataset({ temperature: tempEncrypted });
+      expect(ds.detectEncryption()).toBe(true);
+      expect(ds.isEncrypted).toBe(true);
+
+      // Remove the encrypted variable
+      ds.removeVariable('temperature');
+
+      // Add a non-encrypted variable
+      const tempPlain = new DataArray([4, 5, 6], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] },
+        attrs: {
+          codecs: [{ name: 'gzip' }]
+        }
+      });
+      ds.addVariable('temperature', tempPlain);
+
+      // Re-detect should now return false
+      expect(ds.detectEncryption()).toBe(false);
+      expect(ds.isEncrypted).toBe(false);
+    });
+  });
 });

@@ -191,6 +191,70 @@ describe('ZarrBackend', () => {
     expect(dataset.attrs.title).toBe('Test Dataset');
     expect(dataset.attrs.version).toBe('1.0');
   });
+
+  test('should automatically detect encryption when opening store', async () => {
+    const store = new MemoryZarrStore({
+      'zarr.json': { node_type: 'group', attributes: {} },
+      'data/zarr.json': {
+        node_type: 'array',
+        shape: [10],
+        dimension_names: ['x'],
+        attributes: {},
+        codecs: [
+          { name: 'bytes', configuration: { endian: 'little' } },
+          { name: 'xchacha20poly1305', configuration: { key: 'encrypted' } }
+        ]
+      }
+    });
+
+    const dataset = await ZarrBackend.open(store);
+
+    expect(dataset.isEncrypted).toBe(true);
+  });
+
+  test('should detect no encryption for non-encrypted store', async () => {
+    const store = new MemoryZarrStore({
+      'zarr.json': { node_type: 'group', attributes: {} },
+      'data/zarr.json': {
+        node_type: 'array',
+        shape: [10],
+        dimension_names: ['x'],
+        attributes: {},
+        codecs: [
+          { name: 'bytes', configuration: { endian: 'little' } },
+          { name: 'gzip', configuration: { level: 5 } }
+        ]
+      }
+    });
+
+    const dataset = await ZarrBackend.open(store);
+
+    expect(dataset.isEncrypted).toBe(false);
+  });
+
+  test('should store codecs in DataArray attributes', async () => {
+    const store = new MemoryZarrStore({
+      'zarr.json': { node_type: 'group', attributes: {} },
+      'data/zarr.json': {
+        node_type: 'array',
+        shape: [10],
+        dimension_names: ['x'],
+        attributes: {},
+        codecs: [
+          { name: 'bytes', configuration: { endian: 'little' } },
+          { name: 'gzip', configuration: { level: 5 } }
+        ]
+      }
+    });
+
+    const dataset = await ZarrBackend.open(store);
+    const dataVar = dataset.getVariable('data');
+
+    expect(dataVar.attrs.codecs).toBeDefined();
+    expect(dataVar.attrs.codecs).toHaveLength(2);
+    expect(dataVar.attrs.codecs[0].name).toBe('bytes');
+    expect(dataVar.attrs.codecs[1].name).toBe('gzip');
+  });
 });
 
 describe('Dataset.open_zarr', () => {
