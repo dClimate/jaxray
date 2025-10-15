@@ -9,7 +9,6 @@
     "build": "tsc",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    // "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
