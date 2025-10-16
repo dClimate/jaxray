@@ -2,8 +2,8 @@
  * Dataset - A collection of labeled DataArrays
  * Similar to xarray.Dataset in Python
  */
-import { DataArray } from './DataArray';
-import { Coordinates, Attributes, DatasetOptions, Selection, DimensionName, SelectionOptions, StreamOptions, StreamChunk } from './types';
+import { DataArray } from './DataArray.js';
+import { Coordinates, Attributes, DatasetOptions, Selection, DimensionName, SelectionOptions, StreamOptions, StreamChunk } from './types.js';
 export declare class Dataset {
     private _dataVars;
     private _coords;

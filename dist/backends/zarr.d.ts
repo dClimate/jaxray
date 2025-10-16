@@ -1,4 +1,4 @@
-import { Dataset } from "../Dataset";
+import { Dataset } from "../Dataset.js";
 export interface ZarrStore {
     get(key: string): Promise<Uint8Array | undefined>;
     has?(key: string): Promise<boolean>;

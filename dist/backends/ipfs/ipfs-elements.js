@@ -1,5 +1,5 @@
 // ipfs-elements.ts
-import { KuboCAS } from './ipfs-gateway';
+import { KuboCAS } from './ipfs-gateway.js';
 export function createIpfsElements(gatewayUrl = 'http://127.0.0.1:8080') {
     const gateway = new KuboCAS({
         gatewayBaseUrl: gatewayUrl,

@@ -15,9 +15,9 @@ import {
   SelectionOptions,
   StreamOptions,
   StreamChunk
-} from './types';
-import { getShape, flatten, reshape, deepClone } from './utils';
-import { isTimeCoordinate, parseCFTimeUnits } from './cf-time';
+} from './types.js';
+import { getShape, flatten, reshape, deepClone } from './utils.js';
+import { isTimeCoordinate, parseCFTimeUnits } from './cf-time.js';
 
 export class DataArray {
   private _data: NDArray;

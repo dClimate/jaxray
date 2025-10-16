@@ -1,9 +1,9 @@
 // backends/zarr.ts
 import * as zarr from "zarrita";
-import { Dataset } from "../Dataset";
-import { DataArray } from "../DataArray";
-import { reshape } from "../utils";
-import { DataValue } from "../types";
+import { Dataset } from "../Dataset.js";
+import { DataArray } from "../DataArray.js";
+import { reshape } from "../utils.js";
+import { DataValue } from "../types.js";
 
 // Types you already declared:
 export interface ZarrStore {

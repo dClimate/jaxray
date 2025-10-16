@@ -5,17 +5,17 @@
  * inspired by Python's xarray library.
  */
 
-export { DataArray } from './DataArray';
-export { Dataset } from './Dataset';
-export * from './types';
-export * from './utils';
-export * from './cf-time';
+export { DataArray } from './DataArray.js';
+export { Dataset } from './Dataset.js';
+export * from './types.js';
+export * from './utils.js';
+export * from './cf-time.js';
 
 // Backends
-export { ZarrBackend, type ZarrStore } from './backends/zarr';
-export { ShardedStore } from './backends/ipfs/sharded-store';
-export { createIpfsElements } from './backends/ipfs/ipfs-elements';
-export { KuboCAS } from './backends/ipfs/ipfs-gateway';
+export { ZarrBackend, type ZarrStore } from './backends/zarr.js';
+export { ShardedStore } from './backends/ipfs/sharded-store.js';
+export { createIpfsElements } from './backends/ipfs/ipfs-elements.js';
+export { KuboCAS } from './backends/ipfs/ipfs-gateway.js';
 
 // Version
 export const VERSION = '1.0.0';

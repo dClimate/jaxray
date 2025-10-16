@@ -2,9 +2,9 @@
  * Dataset - A collection of labeled DataArrays
  * Similar to xarray.Dataset in Python
  */
-import { deepClone, getBytesPerElement, ZARR_ENCODINGS } from './utils';
-import { formatCoordinateValue, isTimeCoordinate } from './cf-time';
-import { ZarrBackend } from './backends/zarr';
+import { deepClone, getBytesPerElement, ZARR_ENCODINGS } from './utils.js';
+import { formatCoordinateValue, isTimeCoordinate } from './cf-time.js';
+import { ZarrBackend } from './backends/zarr.js';
 export class Dataset {
     constructor(dataVars = {}, options = {}) {
         this._precision = 6;

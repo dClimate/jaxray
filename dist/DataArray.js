@@ -2,8 +2,8 @@
  * DataArray - A labeled, multi-dimensional array
  * Similar to xarray.DataArray in Python
  */
-import { getShape, flatten, deepClone } from './utils';
-import { isTimeCoordinate, parseCFTimeUnits } from './cf-time';
+import { getShape, flatten, deepClone } from './utils.js';
+import { isTimeCoordinate, parseCFTimeUnits } from './cf-time.js';
 export class DataArray {
     constructor(data, options = {}) {
         this._precision = 6;

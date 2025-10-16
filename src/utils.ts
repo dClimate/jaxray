@@ -2,7 +2,7 @@
  * Utility functions for jaxray
  */
 
-import { NDArray, DataValue } from './types';
+import { NDArray, DataValue } from './types.js';
 
 /**
  * Set of Zarr codec names that indicate encryption

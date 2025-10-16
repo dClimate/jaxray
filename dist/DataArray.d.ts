@@ -2,7 +2,7 @@
  * DataArray - A labeled, multi-dimensional array
  * Similar to xarray.DataArray in Python
  */
-import { NDArray, DimensionName, Coordinates, Attributes, DataArrayOptions, Selection, SelectionOptions, StreamOptions, StreamChunk } from './types';
+import { NDArray, DimensionName, Coordinates, Attributes, DataArrayOptions, Selection, SelectionOptions, StreamOptions, StreamChunk } from './types.js';
 export declare class DataArray {
     private _data;
     private _dims;

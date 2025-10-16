@@ -3,7 +3,7 @@
  * Similar to xarray.Dataset in Python
  */
 
-import { DataArray } from './DataArray';
+import { DataArray } from './DataArray.js';
 import {
   Coordinates,
   Attributes,
@@ -15,10 +15,10 @@ import {
   SelectionOptions,
   StreamOptions,
   StreamChunk
-} from './types';
-import { deepClone, getBytesPerElement, ZARR_ENCODINGS } from './utils';
-import { formatCoordinateValue, isTimeCoordinate } from './cf-time';
-import { ZarrBackend } from './backends/zarr';
+} from './types.js';
+import { deepClone, getBytesPerElement, ZARR_ENCODINGS } from './utils.js';
+import { formatCoordinateValue, isTimeCoordinate } from './cf-time.js';
+import { ZarrBackend } from './backends/zarr.js';
 
 export class Dataset {
   private _dataVars: Map<string, DataArray>;

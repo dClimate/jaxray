@@ -1,5 +1,5 @@
 // ipfs-elements.ts
-import { KuboCAS } from './ipfs-gateway';
+import { KuboCAS } from './ipfs-gateway.js';
 import { CID } from "multiformats/cid";
 
 export type DagCborBlockstore = {

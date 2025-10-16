@@ -1,8 +1,8 @@
 // backends/zarr.ts
 import * as zarr from "zarrita";
-import { Dataset } from "../Dataset";
-import { DataArray } from "../DataArray";
-import { reshape } from "../utils";
+import { Dataset } from "../Dataset.js";
+import { DataArray } from "../DataArray.js";
+import { reshape } from "../utils.js";
 function lastSegment(path) {
     const p = path.replace(/^\/+/, "").replace(/\/+$/, "");
     const segs = p.split("/");
