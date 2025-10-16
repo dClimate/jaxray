@@ -41,6 +41,10 @@
     "README.md"
   ],
   "dependencies": {
+    "@ipld/dag-cbor": "^9.2.5",
+    "it-all": "^1.0.6",
+    "multiformats": "^13.3.1",
+    "uint8arrays": "^5.1.0",
     "zarrita": "^0.5.4"
   }
 }
