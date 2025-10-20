@@ -1,6 +1,6 @@
 {
   "name": "jaxray",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "A javascript implementation similar to xarray",
   "type": "module",
   "main": "dist/index.js",
