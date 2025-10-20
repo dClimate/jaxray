@@ -1,5 +1,5 @@
 {
-  "name": "jaxray",
+  "name": "@dclimate/jaxray",
   "version": "0.1.0",
   "description": "A javascript implementation similar to xarray",
   "type": "module",
