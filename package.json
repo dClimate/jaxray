@@ -28,8 +28,15 @@
     "scientific",
     "data"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": "TheGreatAlgo <37487508+TheGreatAlgo@users.noreply.github.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dClimate/jaxray.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dClimate/jaxray/issues"
+  },
   "devDependencies": {
     "@types/node": "^24.6.2",
     "@vitest/coverage-v8": "3.2.4",
