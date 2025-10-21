@@ -140,7 +140,81 @@ export function setAtIndex(data: NDArray, indices: number[], value: DataValue): 
  * Deep clone an object
  */
 export function deepClone<T>(obj: T): T {
-  return JSON.parse(JSON.stringify(obj));
+  if (typeof globalThis.structuredClone === 'function') {
+    try {
+      return structuredClone(obj);
+    } catch (err) {
+      if (!(err && typeof err === 'object' && 'name' in err && (err as { name: string }).name === 'DataCloneError')) {
+        throw err;
+      }
+    }
+  }
+  return cloneValue(obj, new WeakMap());
+}
+
+function cloneValue<T>(value: T, seen: WeakMap<object, any>): T {
+  if (value === null || typeof value !== 'object') {
+    if (typeof value === 'bigint') {
+      return BigInt(value) as T;
+    }
+    if (typeof value === 'function') {
+      return value;
+    }
+    return value;
+  }
+
+  if (seen.has(value as object)) {
+    return seen.get(value as object);
+  }
+
+  if (Array.isArray(value)) {
+    const clonedArray = value.map((item) => cloneValue(item, seen));
+    seen.set(value, clonedArray);
+    return clonedArray as T;
+  }
+
+  if (value instanceof Date) {
+    return new Date(value.getTime()) as T;
+  }
+
+  if (value instanceof Map) {
+    const clonedMap = new Map();
+    seen.set(value, clonedMap);
+    for (const [key, val] of value.entries()) {
+      clonedMap.set(cloneValue(key, seen), cloneValue(val, seen));
+    }
+    return clonedMap as T;
+  }
+
+  if (value instanceof Set) {
+    const clonedSet = new Set();
+    seen.set(value, clonedSet);
+    for (const item of value.values()) {
+      clonedSet.add(cloneValue(item, seen));
+    }
+    return clonedSet as T;
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    const ctor = (value as any).constructor;
+    return new ctor(value as any) as T;
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return value.slice(0) as T;
+  }
+
+  const clonedObj: Record<string | symbol, any> = {};
+  seen.set(value as object, clonedObj);
+  for (const key of Reflect.ownKeys(value as object)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value as object, key);
+    if (descriptor && descriptor.enumerable) {
+      clonedObj[key as any] = cloneValue((value as any)[key], seen);
+    } else if (descriptor) {
+      Object.defineProperty(clonedObj, key, descriptor);
+    }
+  }
+  return clonedObj as T;
 }
 
 /**

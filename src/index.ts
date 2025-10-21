@@ -14,6 +14,7 @@ export * from './cf-time.js';
 // Backends
 export { ZarrBackend, type ZarrStore } from './backends/zarr.js';
 export { ShardedStore } from './backends/ipfs/sharded-store.js';
+export { IPFSStore } from './backends/ipfs/hamt-store.js';
 export { createIpfsElements } from './backends/ipfs/ipfs-elements.js';
 export { KuboCAS } from './backends/ipfs/ipfs-gateway.js';
 

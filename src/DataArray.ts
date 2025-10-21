@@ -57,7 +57,6 @@ export class DataArray {
     this._shape = getShape(data);
     this._attrs = options.attrs || {};
     this._name = options.name;
-
     // Handle dimensions
     if (options.dims) {
       if (options.dims.length !== this._shape.length) {
@@ -341,7 +340,8 @@ export class DataArray {
     for (const [dim, sel] of Object.entries(selection)) {
       if (typeof sel === 'number') {
         // Convert index to coordinate value
-        indexSelection[dim] = this._coords[dim][sel];
+        const coordValue = this._coords[dim]?.[sel];
+        indexSelection[dim] = coordValue;
       } else if (Array.isArray(sel)) {
         const coords = sel.map(i => this._coords[dim][i]);
         indexSelection[dim] = coords;
@@ -842,7 +842,7 @@ export class DataArray {
         indexRanges[dim] = { start: 0, stop: this._shape[i] };
         newDims.push(dim);
         newCoords[dim] = this._coords[dim];
-      } else if (typeof sel === 'number' || typeof sel === 'string' || sel instanceof Date) {
+      } else if (typeof sel === 'number' || typeof sel === 'string' || typeof sel === 'bigint' || sel instanceof Date) {
         // Single value - dimension will be dropped
         const index = this._findCoordinateIndex(dim, sel, options);
         indexRanges[dim] = index;
@@ -900,7 +900,7 @@ export class DataArray {
       // Adjust dimension index for already-dropped dimensions
       const currentDimIndex = i - dimensionsDropped;
 
-      if (typeof sel === 'number' || typeof sel === 'string' || sel instanceof Date) {
+      if (typeof sel === 'number' || typeof sel === 'string' || typeof sel === 'bigint' || sel instanceof Date) {
         // Single value selection - this will drop a dimension
         const index = this._findCoordinateIndex(dim, sel, options);
         result = this._selectAtDimension(result, currentDimIndex, index);
@@ -996,14 +996,17 @@ export class DataArray {
       }
     } else if (typeof value === 'number') {
       numericValue = value;
+    } else if (typeof value === 'bigint') {
+      // Convert BigInt to number for arithmetic operations
+      numericValue = Number(value);
     } else {
       // Date or other type - use fallback
       return this._findIndexFallback(coords, value, method, tolerance);
     }
 
     // Try arithmetic-based lookup for evenly-spaced numeric coordinates
-    if (coords.length >= 2 && coords.every(c => typeof c === 'number')) {
-      const numCoords = coords as number[];
+    if (coords.length >= 2 && coords.every(c => typeof c === 'number' || typeof c === 'bigint')) {
+      const numCoords = coords.map(c => typeof c === 'bigint' ? Number(c) : c as number);
       const min = numCoords[0];
       const step = numCoords.length > 1 ? (numCoords[1] - numCoords[0]) : 1;
 

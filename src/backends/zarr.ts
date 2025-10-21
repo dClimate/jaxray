@@ -241,7 +241,8 @@ export class ZarrBackend {
 
         // Handle scalar result (all dimensions were single indices)
         if (resultShape.length === 0) {
-          return result.data !== undefined ? result.data : result;
+          const scalarValue = result.data !== undefined ? result.data : result;
+          return scalarValue;
         }
 
         // Handle array result

@@ -32,14 +32,12 @@ export function createIpfsElements(gatewayUrl = 'http://127.0.0.1:8080') {
 
   const dagCborBlockstore: DagCborBlockstore = {
     async get(cid: string | CID) {
-      console.log('Fetching DAG-CBOR block for CID:', cid);
       return await gateway.load(cid);
     },
   };
 
   const unixfs: UnixfsCat = {
     cat: async function* (cid: string | CID): AsyncIterable<Uint8Array> {
-      console.log('Fetching UnixFS data for CID:', cid);
       const data = await gateway.load(cid);
       yield data;
     },

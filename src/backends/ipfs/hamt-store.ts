@@ -9,7 +9,7 @@ import { AsyncReadable, AbsolutePath, RangeQuery } from "zarrita"; // Adjust imp
 import * as blockCodec from "@ipld/dag-cbor";
 import { concat as uint8ArrayConcat } from "uint8arrays/concat";
 import all from "it-all";
-import { blake3 as b3 } from "@noble/hashes/blake3";
+import { blake3 as b3 } from "@noble/hashes/blake3.js";
 import { CID, hasher } from "multiformats";
 // eslint-disable-next-line import/no-extraneous-dependencies
 import { UnixFS } from "ipfs-unixfs";
@@ -212,9 +212,17 @@ export class IPFSStore implements AsyncReadable {
 
     public metadata: any;
 
+    private metadataKeysCache?: string[];
+
+    private metadataLoadPromise?: Promise<void>;
+
     constructor(cid: any, ipfsElements: IPFSELEMENTS_INTERFACE) {
         this.cid = cid;
         this.ipfsElements = ipfsElements;
+    }
+
+    private normalizeKey(key: string): string {
+        return key.startsWith("/") ? key.slice(1) : key;
     }
 
     // eslint-disable-next-line class-methods-use-this
@@ -263,7 +271,7 @@ export class IPFSStore implements AsyncReadable {
      * @private
      */
     private async findBucket(inputKey: string): Promise<{ bucket: Record<string, any>; normalizedKey: string }> {
-        const normalizedKey = inputKey.startsWith("/") ? inputKey.slice(1) : inputKey;
+        const normalizedKey = this.normalizeKey(inputKey);
         const hash = await this.hashFn(normalizedKey);
         let currentNodeId = this.cid;
         let depth = 0;
@@ -358,6 +366,65 @@ export class IPFSStore implements AsyncReadable {
         }
     }
 
+    private async ensureMetadataLoaded(): Promise<void> {
+        if (this.metadataKeysCache) {
+            return;
+        }
+        if (this.metadataLoadPromise) {
+            await this.metadataLoadPromise;
+            return;
+        }
+
+        this.metadataLoadPromise = (async () => {
+            let rootBytes: Uint8Array | undefined;
+            try {
+                rootBytes = await this.findItemInNode("zarr.json");
+            } catch (err) {
+                if (err instanceof KeyError) {
+                    return;
+                }
+                throw err;
+            }
+
+            if (!rootBytes) {
+                return;
+            }
+
+            let rootMeta: any;
+            const rootString = new TextDecoder().decode(rootBytes);
+            try {
+                rootMeta = JSON.parse(rootString);
+            } catch {
+                try {
+                    rootMeta = blockCodec.decode(rootBytes);
+                } catch (decodeErr) {
+                    console.error("Failed to decode consolidated metadata:", decodeErr);
+                    return;
+                }
+            }
+
+            this.metadata = rootMeta;
+            const metadataKeys = new Set<string>();
+            metadataKeys.add("zarr.json");
+            // This may need to change in the future
+            const consolidated = rootMeta?.consolidated_metadata.metadata;
+            if (consolidated && typeof consolidated === "object") {
+                for (const [nodeName] of Object.entries(consolidated)) {
+                    const normalizedName = this.normalizeKey(nodeName);
+                    const key = normalizedName.length > 0 ? `${normalizedName}/zarr.json` : "zarr.json";
+                    metadataKeys.add(key);
+                }
+            }
+            this.metadataKeysCache = Array.from(metadataKeys);
+        })();
+
+        try {
+            await this.metadataLoadPromise;
+        } finally {
+            this.metadataLoadPromise = undefined;
+        }
+    }
+
     /** Fetch entire item for a key */
     async get(key: AbsolutePath): Promise<Uint8Array | undefined> {
         try {
@@ -387,5 +454,13 @@ export class IPFSStore implements AsyncReadable {
             }
             throw e;
         }
+    }
+
+    async listMetadataKeys(): Promise<string[]> {
+        await this.ensureMetadataLoaded();
+        if (!this.metadataKeysCache) {
+            return [];
+        }
+        return [...this.metadataKeysCache];
     }
 }
