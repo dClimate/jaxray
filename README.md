@@ -143,6 +143,43 @@ const tolerant = await data.sel({ x: 7 }, {
 await data.sel({ x: 13 }, { method: 'nearest', tolerance: 2 });
 ```
 
+### Open an IPFS-hosted Zarr dataset with a single CID
+
+jaxray can auto-detect whether a CID points to a sharded Zarr store or a HAMT-backed one. All you need is the CID:
+
+```typescript
+import { Dataset, openIpfsStore } from 'jaxray';
+
+const cid = 'bafy…';
+
+// Automatically detects the underlying layout and selects the correct store
+const { type, store } = await openIpfsStore(cid);
+console.log(`Detected store type: ${type}`); // "sharded" or "hamt"
+
+// Use the store with the regular Dataset API
+const ds = await Dataset.open_zarr(store);
+
+// Work with the dataset immediately
+console.log(ds.dataVars);
+const snapshot = await ds.sel({
+  latitude: 45,
+  longitude: 34,
+  time: '2025-09-02T00:00:00Z'
+});
+console.log(snapshot.getVariable('temperature').values);
+```
+
+The helper uses dClimate's public gateway by default. Provide your own gateway or custom IPFS primitives when needed:
+
+```typescript
+import { createIpfsElements, openIpfsStore } from 'jaxray';
+
+await openIpfsStore(cid, { gatewayUrl: 'https://ipfs.my-org.dev' });
+// or reuse your own IPFS primitives
+const customElements = createIpfsElements('https://ipfs.my-org.dev');
+const { type, store } = await openIpfsStore(cid, { ipfsElements: customElements });
+```
+
 ### Streaming Large Datasets
 
 For large datasets that don't fit in memory, use streaming to process data in chunks:

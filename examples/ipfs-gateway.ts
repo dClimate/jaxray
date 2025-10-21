@@ -3,7 +3,7 @@
  */
 
 import { CID } from "multiformats/cid";
-import { Dataset, IPFSStore, ShardedStore, createIpfsElements } from "../src";
+import { Dataset, HamtStore, ShardedStore, createIpfsElements, openIpfsStore } from "../src";
 
 const GATEWAY_URL = "https://ipfs-gateway.dclimate.net";
 const SHARDED_CID = "bafyr4iacuutc5bgmirkfyzn4igi2wys7e42kkn674hx3c4dv4wrgjp2k2u";
@@ -40,7 +40,7 @@ async function openHamtDataset() {
     console.log("\n=== HAMT-backed Zarr via IPFS Gateway ===");
     const ipfsElements = createIpfsElements(GATEWAY_URL);
     const rootCid = CID.parse(HAMT_CID);
-    const store = new IPFSStore(rootCid, ipfsElements);
+    const store = new HamtStore(rootCid, ipfsElements);
     const dataset = await Dataset.open_zarr(store);
 
     console.log("Variables:", dataset.dataVars);
@@ -67,6 +67,11 @@ async function openHamtDataset() {
 async function main() {
     await openShardedDataset();
     await openHamtDataset();
+    console.log("\n=== Auto-detected store ===");
+    const { type, store } = await openIpfsStore(HAMT_CID);
+    console.log(`Auto detected store type: ${type}`);
+    const dataset = await Dataset.open_zarr(store);
+    console.log("Auto dataset dims:", dataset.dims);
 }
 
 main().catch((err) => {

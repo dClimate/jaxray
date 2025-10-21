@@ -1,6 +1,6 @@
 /* eslint-disable no-await-in-loop */
 // Disable max-classes-per-file rule for this file
-// This file contains the IPFSStore class and related functions for handling Zarr data
+// This file contains the HamtStore class and related functions for handling Zarr data
 // in IPFS using the Zarrita library. The py-hamt implementation comes from https://github.com/dClimate/py-hamt
 /* eslint-disable no-bitwise */
 // eslint-disable-next-line max-classes-per-file
@@ -201,7 +201,7 @@ export const blake3 = hasher.from({
     encode: (input) => b3(input),
 });
 
-export class IPFSStore implements AsyncReadable {
+export class HamtStore implements AsyncReadable {
     public cid: CID;
 
     public ipfsElements: IPFSELEMENTS_INTERFACE;

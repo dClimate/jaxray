@@ -14,8 +14,10 @@ export * from './cf-time.js';
 // Backends
 export { ZarrBackend, type ZarrStore } from './backends/zarr.js';
 export { ShardedStore } from './backends/ipfs/sharded-store.js';
-export { IPFSStore } from './backends/ipfs/hamt-store.js';
+export { HamtStore } from './backends/ipfs/hamt-store.js';
 export { createIpfsElements } from './backends/ipfs/ipfs-elements.js';
+export { openIpfsStore, detectIpfsStoreType } from './backends/ipfs/open-store.js';
+export type { OpenStoreOptions } from './backends/ipfs/open-store.js';
 export { KuboCAS } from './backends/ipfs/ipfs-gateway.js';
 
 // Version

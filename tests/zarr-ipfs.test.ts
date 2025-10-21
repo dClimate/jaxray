@@ -6,7 +6,7 @@ import { describe, test, expect } from 'vitest';
 import { CID } from 'multiformats/cid';
 import { Dataset } from '../src/Dataset';
 import { ShardedStore } from '../src/backends/ipfs/sharded-store';
-import { IPFSStore } from '../src/backends/ipfs/hamt-store';
+import { HamtStore } from '../src/backends/ipfs/hamt-store';
 import { createIpfsElements } from '../src/backends/ipfs/ipfs-elements';
 
 describe('Dataset.open_zarr with IPFS', () => {
@@ -87,7 +87,7 @@ describe('Dataset.open_zarr with IPFS', () => {
 
     const ipfsElements = createIpfsElements('https://ipfs-gateway.dclimate.net');
     const rootCid = CID.parse(cid);
-    const store = new IPFSStore(rootCid, ipfsElements);
+    const store = new HamtStore(rootCid, ipfsElements);
 
     const ds = await Dataset.open_zarr(store);
     // Query some data
