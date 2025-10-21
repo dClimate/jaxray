@@ -47,18 +47,12 @@ describe('Dataset.open_zarr with IPFS', () => {
       longitude: 34,
       time: '1987-05-03T23:00:00'
     });
-    console.log('Selected dataset:');
-    console.log(selected);
-
-    console.log('Selected data:', selected.getVariable('2m_temperature').values);
 
     const rangeSelected = await ds.sel({
       latitude: [44, 45],
       longitude: [33, 34],
       time: ['1987-05-03T23:00:00', '1987-05-04T23:00:00']
     });
-    console.log('Range selected dataset:');
-    console.log(rangeSelected);
 
     // Check if we got a result
     expect(selected).toBeDefined();
@@ -97,13 +91,9 @@ describe('Dataset.open_zarr with IPFS', () => {
 
     const ds = await Dataset.open_zarr(store);
     // Query some data
-    console.log('forecast_reference_time coordinates:', ds.coords['forecast_reference_time']);
+    expect(ds.coords['forecast_reference_time'][0]).toBeInstanceOf(Date);
 
     const dataArray = ds.getVariable('AIFS Ensemble 2m Temperature');
-    console.log('Data variable:', dataArray);
-    console.log('forecast_reference_time attributes:', dataArray.attrs._coordAttrs?.forecast_reference_time);
-    console.log('forecast_reference_time attributes:', dataArray.attrs._coordAttrs?.step);
-
 
     const dataSelected = await dataArray.isel({
       latitude: 45,
@@ -118,11 +108,11 @@ describe('Dataset.open_zarr with IPFS', () => {
     const dataSelectedBySel = await dataArray.sel({
       latitude: -78.75,  // The coordinate value at index 45
       longitude: -171.5, // The coordinate value at index 34
-      step: 0,           // The coordinate value at index 0
-      forecast_reference_time: 0, // The coordinate value at index 0
+      step: 0,           // hour 0
+      forecast_reference_time: "2025-10-11", //
     });
 
-    expect(dataSelectedBySel.values).toBe(251.53819274902344);
+    expect(dataSelectedBySel.values).toBe(237.5486297607422);
 
     expect(ds).toBeInstanceOf(Dataset);
     expect(ds.dataVars.length).toBeGreaterThan(0);

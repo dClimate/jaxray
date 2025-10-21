@@ -300,7 +300,6 @@ export class ShardedStore implements AsyncReadable {
                     throw new TypeError(`Shard ${shardIdx} (CID: ${shardCid}) did not decode to an array.`);
                 }
                 this.shardDataCache.set(shardIdx, decodedShard);
-                console.debug(`Successfully fetched and decoded shard ${shardIdx}.`);
             } catch (err) {
                 console.error(`Failed to load and decode shard ${shardIdx} (CID: ${shardCid}):`, err);
                 throw err; // Re-throw to propagate failure to the caller.

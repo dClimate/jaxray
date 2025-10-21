@@ -4,6 +4,35 @@ import { Dataset } from "../Dataset.js";
 import { DataArray } from "../DataArray.js";
 import { reshape } from "../utils.js";
 import { DataValue } from "../types.js";
+import { cfTimeToDate, isTimeCoordinate } from "../cf-time.js";
+
+function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | undefined): any[] {
+  const normalized = values.map((value) => {
+    if (typeof value === "bigint") {
+      const asNumber = Number(value);
+      if (Number.isFinite(asNumber)) {
+        return asNumber;
+      }
+    }
+    return value;
+  });
+
+  if (attrs && isTimeCoordinate(attrs)) {
+    const units: string | undefined = attrs.units;
+    const calendar: string | undefined = attrs.calendar;
+    if (units) {
+      return normalized.map((value) => {
+        if (typeof value === "number") {
+          const date = cfTimeToDate(value, units, calendar);
+          return date ?? value;
+        }
+        return value;
+      });
+    }
+  }
+
+  return normalized;
+}
 
 // Types you already declared:
 export interface ZarrStore {
@@ -173,7 +202,8 @@ export class ZarrBackend {
         const values = coordData.data || coordData;
 
         // Convert to regular array
-        const coordValues = Array.isArray(values) ? values : Array.from(values as any);
+        const rawValues = Array.isArray(values) ? values : Array.from(values as any);
+        const coordValues = normalizeCoordinateValues(rawValues, arr.attrs);
         coords[arr.name] = coordValues;
 
         // Store coordinate attributes (e.g., time units)

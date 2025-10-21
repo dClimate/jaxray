@@ -926,87 +926,86 @@ export class DataArray {
     const method = options?.method;
     const tolerance = options?.tolerance;
 
-    // Convert value to numeric for arithmetic lookup
-    let numericValue: number;
+    const coordAttrs = (this._attrs as any)?._coordAttrs;
+    const dimAttrs = coordAttrs?.[dim] || this._attrs;
+    const units = dimAttrs?.units as string | undefined;
+    const timeLike = isTimeCoordinate(dimAttrs);
+    let parsedUnits: ReturnType<typeof parseCFTimeUnits> | null | undefined;
 
-    // Handle time coordinate conversion for string dates
-    if (typeof value === 'string') {
-      // Get coordinate-specific attributes
-      // Check _coordAttrs first (Dataset level), then fall back to _attrs
-      const coordAttrs = (this._attrs as any)?._coordAttrs;
-      const dimAttrs = coordAttrs?.[dim] || this._attrs;
+    const parseUnits = () => {
+      if (parsedUnits === undefined) {
+        parsedUnits = units ? parseCFTimeUnits(units) : null;
+      }
+      return parsedUnits;
+    };
 
-      // Check if this looks like a time coordinate and we have a date string
-      if (isTimeCoordinate(dimAttrs)) {
-        const units = dimAttrs?.units as string | undefined;
+    const convertDateToNumeric = (date: Date): number | undefined => {
+      const parsed = parseUnits();
+      if (!parsed) return undefined;
+      const { unit, referenceDate } = parsed;
+      const diff = date.getTime() - referenceDate.getTime();
+      switch (unit) {
+        case 'second':
+          return diff / 1000;
+        case 'minute':
+          return diff / (60 * 1000);
+        case 'hour':
+          return diff / (60 * 60 * 1000);
+        case 'day':
+          return diff / (24 * 60 * 60 * 1000);
+        case 'week':
+          return diff / (7 * 24 * 60 * 60 * 1000);
+        case 'month':
+          return diff / (30 * 24 * 60 * 60 * 1000);
+        case 'year':
+          return diff / (365.25 * 24 * 60 * 60 * 1000);
+        default:
+          return diff / 1000;
+      }
+    };
 
-        if (units) {
-          const parsed = parseCFTimeUnits(units);
-          if (parsed) {
-            // Parse the input date string as UTC
-            let inputDateStr = value;
-            if (!inputDateStr.endsWith('Z') && !inputDateStr.includes('+')) {
-              inputDateStr = inputDateStr + 'Z';
-            }
-            const inputDate = new Date(inputDateStr);
-            if (isNaN(inputDate.getTime())) {
-              throw new Error(`Invalid date string: '${value}'`);
-            }
-
-            // Calculate the CF time value from the input date
-            const { unit, referenceDate } = parsed;
-            const timeDiff = inputDate.getTime() - referenceDate.getTime();
-
-            switch (unit) {
-              case 'second':
-                numericValue = timeDiff / 1000;
-                break;
-              case 'minute':
-                numericValue = timeDiff / (60 * 1000);
-                break;
-              case 'hour':
-                numericValue = timeDiff / (60 * 60 * 1000);
-                break;
-              case 'day':
-                numericValue = timeDiff / (24 * 60 * 60 * 1000);
-                break;
-              case 'week':
-                numericValue = timeDiff / (7 * 24 * 60 * 60 * 1000);
-                break;
-              case 'month':
-                numericValue = timeDiff / (30 * 24 * 60 * 60 * 1000);
-                break;
-              case 'year':
-                numericValue = timeDiff / (365.25 * 24 * 60 * 60 * 1000);
-                break;
-              default:
-                numericValue = timeDiff / 1000;
-            }
-          } else {
-            // Fallback to indexOf for non-CF time strings
-            return this._findIndexFallback(coords, value, method, tolerance);
-          }
-        } else {
-          // Fallback to indexOf for non-CF time strings
-          return this._findIndexFallback(coords, value, method, tolerance);
+    const convertValueToNumeric = (val: CoordinateValue): number | undefined => {
+      if (typeof val === 'number') return val;
+      if (typeof val === 'bigint') return Number(val);
+      if (val instanceof Date) return convertDateToNumeric(val);
+      if (typeof val === 'string' && timeLike && units) {
+        const parsed = parseUnits();
+        if (!parsed) return undefined;
+        let inputStr = val;
+        if (!inputStr.endsWith('Z') && !inputStr.includes('+')) {
+          inputStr = `${inputStr}Z`;
         }
-      } else {
-        // Not a time coordinate but string value - use indexOf
+        const asDate = new Date(inputStr);
+        if (Number.isNaN(asDate.getTime())) {
+          throw new Error(`Invalid date string: '${val}'`);
+        }
+        return convertDateToNumeric(asDate);
+      }
+      return undefined;
+    };
+
+    let numericValue: number | undefined = convertValueToNumeric(value);
+
+    if (numericValue === undefined) {
+      if (typeof value === 'string') {
         return this._findIndexFallback(coords, value, method, tolerance);
       }
-    } else if (typeof value === 'number') {
-      numericValue = value;
-    } else if (typeof value === 'bigint') {
-      // Convert BigInt to number for arithmetic operations
-      numericValue = Number(value);
-    } else {
-      // Date or other type - use fallback
       return this._findIndexFallback(coords, value, method, tolerance);
     }
 
-    // Try arithmetic-based lookup for evenly-spaced numeric coordinates
-    if (coords.length >= 2 && coords.every(c => typeof c === 'number' || typeof c === 'bigint')) {
-      const numCoords = coords.map(c => typeof c === 'bigint' ? Number(c) : c as number);
+    const numericCoords: number[] = [];
+    let canUseNumeric = true;
+    for (const coord of coords) {
+      const converted = convertValueToNumeric(coord);
+      if (converted === undefined) {
+        canUseNumeric = false;
+        break;
+      }
+      numericCoords.push(converted);
+    }
+
+    if (canUseNumeric && numericCoords.length >= 2) {
+      const numCoords = numericCoords;
       const min = numCoords[0];
       const step = numCoords.length > 1 ? (numCoords[1] - numCoords[0]) : 1;
 

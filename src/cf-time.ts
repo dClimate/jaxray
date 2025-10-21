@@ -21,20 +21,30 @@ export function parseCFTimeUnits(unitsStr: string): { unit: string; referenceDat
   // Parse reference date - handle various formats (always as UTC)
   let referenceDate: Date;
   try {
-    // Ensure we parse as UTC by adding 'Z' if not present
     let dateStrUTC = dateStr.trim();
-    if (!dateStrUTC.endsWith('Z') && !dateStrUTC.includes('+') && !dateStrUTC.includes('-', 10)) {
-      // No timezone specified, add Z for UTC
+
+    // If date/time separated by space, normalize to ISO 8601 with 'T'
+    if (!dateStrUTC.includes('T') && dateStrUTC.includes(' ')) {
+      const parts = dateStrUTC.split(/\s+/);
+      if (parts.length >= 2) {
+        dateStrUTC = `${parts[0]}T${parts[1]}`;
+      }
+    }
+
+    // Detect existing timezone designator (Z or ±hh[:mm])
+    const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(dateStrUTC);
+
+    if (!hasTimezone) {
       if (dateStrUTC.includes('T')) {
-        dateStrUTC = dateStrUTC + 'Z';
+        dateStrUTC = `${dateStrUTC}Z`;
       } else {
-        dateStrUTC = dateStrUTC + 'T00:00:00Z';
+        dateStrUTC = `${dateStrUTC}T00:00:00Z`;
       }
     }
 
     referenceDate = new Date(dateStrUTC);
 
-    if (isNaN(referenceDate.getTime())) {
+    if (Number.isNaN(referenceDate.getTime())) {
       return null;
     }
   /* v8 ignore next 3 */
@@ -134,7 +144,15 @@ export function isTimeCoordinate(attrs: any): boolean {
  * @param value - Coordinate value (number, string, or Date)
  * @param attrs - Coordinate attributes (for CF time conversion)
  */
-export function formatCoordinateValue(value: number | string | Date, attrs?: any): string {
+export function formatCoordinateValue(value: number | string | Date | bigint, attrs?: any): string {
+  if (typeof value === 'bigint') {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return value.toString();
+    }
+    return formatCoordinateValue(numeric, attrs);
+  }
+
   if (typeof value === 'string') {
     return value;
   }

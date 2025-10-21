@@ -72,6 +72,13 @@ describe('parseCFTimeUnits', () => {
     expect(result?.referenceDate.getUTCMinutes()).toBe(0);
   });
 
+  test('should handle date-time separated by space', () => {
+    const result = parseCFTimeUnits('days since 2025-09-01 00:00:00');
+    expect(result).not.toBeNull();
+    expect(result?.unit).toBe('day');
+    expect(result?.referenceDate.getTime()).toBe(new Date('2025-09-01T00:00:00Z').getTime());
+  });
+
   test('should be case insensitive', () => {
     expect(parseCFTimeUnits('DAYS SINCE 2000-01-01')).not.toBeNull();
     expect(parseCFTimeUnits('Days Since 2000-01-01')).not.toBeNull();
@@ -147,6 +154,11 @@ describe('cfTimeToDate', () => {
   test('should handle zero value', () => {
     const date = cfTimeToDate(0, 'days since 2000-01-01');
     expect(date?.getTime()).toBe(new Date('2000-01-01T00:00:00Z').getTime());
+  });
+
+  test('should convert values when reference date uses space separator', () => {
+    const date = cfTimeToDate(2, 'days since 2025-09-01 00:00:00');
+    expect(date?.getTime()).toBe(new Date('2025-09-03T00:00:00Z').getTime());
   });
 });
 
@@ -255,6 +267,12 @@ describe('formatCoordinateValue', () => {
     };
     const result = formatCoordinateValue(24, attrs);
     expect(result).toBe('1970-01-02T00:00:00');
+  });
+
+  test('should handle bigint CF time coordinates', () => {
+    const attrs = { units: 'days since 2000-01-01', standard_name: 'time' };
+    const result = formatCoordinateValue(BigInt(2), attrs);
+    expect(result).toBe('2000-01-03T00:00:00');
   });
 
   test('should fallback to string for invalid CF time', () => {
