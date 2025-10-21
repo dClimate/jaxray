@@ -7,22 +7,9 @@ import * as dagCbor from "@ipld/dag-cbor";
 import { concat as uint8ArrayConcat } from "uint8arrays/concat";
 import all from "it-all";
 import { CID } from "multiformats/cid";
+import { IPFSELEMENTS_INTERFACE } from "./ipfs-elements";
 
 // #region Utility Types and Interfaces
-
-export interface IPFSELEMENTS_INTERFACE {
-    dagCbor: {
-        components: {
-            blockstore: {
-                get: (cid: string | CID) => Promise<Uint8Array>;
-            };
-        };
-    };
-    unixfs: {
-        cat: (cid: string | CID) => AsyncIterable<Uint8Array>;
-    };
-}
-
 /**
  * Type alias for N-dimensional chunk coordinates.
  */

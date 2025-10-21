@@ -7,8 +7,22 @@ export type DagCborBlockstore = {
 };
 
 export type UnixfsCat = {
-  cat: (cid: string | CID) => AsyncIterable<Uint8Array>;
+   cat: (cid: string | CID, options?: { offset?: number; length?: number }) => AsyncIterable<Uint8Array>;
 };
+
+export interface IPFSELEMENTS_INTERFACE {
+    dagCbor: {
+        components: {
+            blockstore: {
+                get: DagCborBlockstore['get'];
+            };
+        };
+    };
+    unixfs: {
+        cat: UnixfsCat['cat'];
+    };
+}
+
 
 export function createIpfsElements(gatewayUrl = 'http://127.0.0.1:8080') {
   const gateway = new KuboCAS({
