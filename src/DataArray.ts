@@ -18,6 +18,11 @@ import {
 } from './types.js';
 import { getShape, flatten, reshape, deepClone } from './utils.js';
 import {
+  createEagerBlock,
+  createPlaceholderLazyBlock,
+  type DataBlock
+} from './core/data-block.js';
+import {
   computeWhere,
   computeBinaryOp,
   type WhereOperand,
@@ -28,7 +33,7 @@ import {
 import { isTimeCoordinate, parseCFTimeUnits } from './cf-time.js';
 
 export class DataArray {
-  private _data: NDArray;
+  private _block: DataBlock;
   private _dims: DimensionName[];
   private _coords: Coordinates;
   private _attrs: Attributes;
@@ -39,7 +44,7 @@ export class DataArray {
   constructor(data: NDArray, options: DataArrayOptions = {}) {
     if (options.lazy) {
       if (!options.virtualShape) throw new Error("lazy DataArray requires virtualShape");
-      this._data = [];                           // no allocation
+      this._block = createPlaceholderLazyBlock(options.virtualShape);
       this._shape = [...options.virtualShape];   // real shape
       this._attrs = options.attrs || {};
       this._name = options.name;
@@ -61,8 +66,9 @@ export class DataArray {
       return;
     }
 
-    this._data = deepClone(data);
-    this._shape = getShape(data);
+    const shape = getShape(data);
+    this._block = createEagerBlock(data);
+    this._shape = [...shape];
     this._attrs = options.attrs || {};
     this._name = options.name;
     // Handle dimensions
@@ -111,7 +117,7 @@ export class DataArray {
    * Get the data as a native JavaScript array
    */
   get data(): NDArray {
-    return deepClone(this._data);
+    return deepClone(this._block.materialize());
   }
 
   /**
@@ -365,7 +371,7 @@ export class DataArray {
   sum(dim?: DimensionName): DataArray | number {
     if (!dim) {
       // Sum all values
-      const flatData = flatten(this._data);
+      const flatData = flatten(this._block.materialize());
       return flatData.reduce((a, b) => (a as number) + (b as number), 0) as number;
     }
 
@@ -401,7 +407,7 @@ export class DataArray {
    */
   mean(dim?: DimensionName): DataArray | number {
     if (!dim) {
-      const flatData = flatten(this._data);
+      const flatData = flatten(this._block.materialize());
       const sum = flatData.reduce((a, b) => (a as number) + (b as number), 0) as number;
       return sum / flatData.length;
     }
@@ -460,6 +466,14 @@ export class DataArray {
     const condOperand = DataArray._normalizeOperand(cond, 'cond');
     const xOperand = DataArray._normalizeOperand(x, 'x');
     const yOperand = DataArray._normalizeOperand(y, 'y');
+
+    if (
+      (condOperand.kind === 'array' && condOperand.block.kind === 'lazy') ||
+      (xOperand.kind === 'array' && xOperand.block.kind === 'lazy') ||
+      (yOperand.kind === 'array' && yOperand.block.kind === 'lazy')
+    ) {
+      throw new Error('where on lazy DataArray operands is not yet supported.');
+    }
 
     const result = computeWhere(condOperand, xOperand, yOperand, options);
 
@@ -656,7 +670,7 @@ export class DataArray {
   toRecords(options?: { precision?: number }): Array<Record<string, any>> {
     const precision = options?.precision !== undefined ? options.precision : 6;
     const records: Array<Record<string, any>> = [];
-    const flatData = flatten(this._data);
+    const flatData = flatten(this._block.materialize());
 
     // Helper function to round numbers
     const round = (value: number): number => {
@@ -1004,10 +1018,10 @@ export class DataArray {
   private _toOperand(): ArrayWhereOperand {
     return {
       kind: 'array',
-      data: this._data,
-      dims: this._dims,
-      coords: this._coords,
-      attrs: this._attrs,
+      block: this._block,
+      dims: this.dims,
+      coords: this.coords,
+      attrs: this.attrs,
       name: this._name
     };
   }
@@ -1042,6 +1056,10 @@ export class DataArray {
   ): DataArray {
     const leftOperand = this._toOperand();
     const rightOperand = DataArray._normalizeOperand(other, 'other');
+
+    if (leftOperand.block.kind === 'lazy' || (rightOperand.kind === 'array' && rightOperand.block.kind === 'lazy')) {
+      throw new Error('Binary operations on lazy DataArray operands are not yet supported.');
+    }
     const keepAttrs = options?.keepAttrs ?? defaults?.keepAttrs;
     const preferNameFrom = options?.preferNameFrom ?? defaults?.preferNameFrom;
 
@@ -1159,7 +1177,7 @@ export class DataArray {
   }
 
   private _selectData(selection: Selection, options?: SelectionOptions): NDArray {
-    let result: any = this._data;
+    let result: any = this._block.materialize();
     let dimensionsDropped = 0;
 
     for (let i = 0; i < this._dims.length; i++) {
@@ -1508,7 +1526,7 @@ export class DataArray {
   private _reduce(dimIndex: number, reducer: (acc: number, val: number) => number): any {
     if (dimIndex === 0) {
       // Reducing the first dimension
-      const data = this._data as any[];
+      const data = this._block.materialize() as any[];
       if (!Array.isArray(data) || data.length === 0) {
         return data;
       }
@@ -1529,7 +1547,7 @@ export class DataArray {
       }
     } else {
       // Reducing a later dimension - recurse into structure
-      const data = this._data as any[];
+      const data = this._block.materialize() as any[];
       return data.map((item: any) => {
         const subArray = new DataArray(item, {
           dims: this._dims.slice(1),

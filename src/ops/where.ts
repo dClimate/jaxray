@@ -5,11 +5,12 @@ import {
   Coordinates,
   Attributes
 } from '../types.js';
-import { reshape, getAtIndex, deepClone } from '../utils.js';
+import { reshape, deepClone } from '../utils.js';
+import type { DataBlock } from '../core/data-block.js';
 
 export interface ArrayWhereOperand {
   kind: 'array';
-  data: NDArray;
+  block: DataBlock;
   dims: DimensionName[];
   coords: Coordinates;
   attrs?: Attributes;
@@ -61,29 +62,23 @@ export function computeWhere(
   options?: WhereOptions
 ): WhereResult {
   const metadata = computeBroadcastMetadata([cond, x, y]);
-  const totalElements = metadata.shape.reduce((acc, value) => acc * value, 1) || 1;
-  const flatResult: DataValue[] = new Array(totalElements);
+  const plan = createBroadcastPlan(metadata);
 
-  for (let flatIndex = 0; flatIndex < totalElements; flatIndex++) {
-    const indices = unravelIndex(flatIndex, metadata.shape);
-    const condValue = resolveOperandValue(cond, metadata.dims, indices);
+  const data = plan.execute(indices => {
+    const condValue = resolveOperandValue(cond, plan.dims, indices);
     const useX = Boolean(condValue);
-    const xValue = resolveOperandValue(x, metadata.dims, indices);
-    const yValue = resolveOperandValue(y, metadata.dims, indices);
-    flatResult[flatIndex] = useX ? xValue : yValue;
-  }
-
-  const data = metadata.shape.length === 0
-    ? flatResult[0]
-    : (reshape(flatResult, metadata.shape) as NDArray);
+    const xValue = resolveOperandValue(x, plan.dims, indices);
+    const yValue = resolveOperandValue(y, plan.dims, indices);
+    return useX ? xValue : yValue;
+  });
 
   const attrs = resolveAttributes(cond, x, y, options?.keepAttrs);
   const name = resolveName(cond, x, y, options?.preferNameFrom);
 
   return {
     data,
-    dims: metadata.dims,
-    coords: metadata.coords,
+    dims: plan.dims,
+    coords: plan.coords,
     attrs,
     name
   };
@@ -96,27 +91,21 @@ export function computeBinaryOp(
   options?: BinaryOpOptions
 ): WhereResult {
   const metadata = computeBroadcastMetadata([left, right]);
-  const totalElements = metadata.shape.reduce((acc, value) => acc * value, 1) || 1;
-  const flatResult: DataValue[] = new Array(totalElements);
+  const plan = createBroadcastPlan(metadata);
 
-  for (let flatIndex = 0; flatIndex < totalElements; flatIndex++) {
-    const indices = unravelIndex(flatIndex, metadata.shape);
-    const leftValue = resolveOperandValue(left, metadata.dims, indices);
-    const rightValue = resolveOperandValue(right, metadata.dims, indices);
-    flatResult[flatIndex] = operator(leftValue, rightValue);
-  }
-
-  const data = metadata.shape.length === 0
-    ? flatResult[0]
-    : (reshape(flatResult, metadata.shape) as NDArray);
+  const data = plan.execute(indices => {
+    const leftValue = resolveOperandValue(left, plan.dims, indices);
+    const rightValue = resolveOperandValue(right, plan.dims, indices);
+    return operator(leftValue, rightValue);
+  });
 
   const attrs = resolveBinaryAttributes(left, right, options?.keepAttrs);
   const name = resolveBinaryName(left, right, options?.preferNameFrom);
 
   return {
     data,
-    dims: metadata.dims,
-    coords: metadata.coords,
+    dims: plan.dims,
+    coords: plan.coords,
     attrs,
     name
   };
@@ -126,6 +115,13 @@ interface BroadcastMetadata {
   dims: DimensionName[];
   coords: Coordinates;
   shape: number[];
+}
+
+interface BroadcastPlan {
+  dims: DimensionName[];
+  coords: Coordinates;
+  shape: number[];
+  execute(handler: (indices: number[]) => DataValue): NDArray;
 }
 
 function computeBroadcastMetadata(operands: WhereOperand[]): BroadcastMetadata {
@@ -163,6 +159,30 @@ function computeBroadcastMetadata(operands: WhereOperand[]): BroadcastMetadata {
   return { dims, coords, shape };
 }
 
+function createBroadcastPlan(metadata: BroadcastMetadata): BroadcastPlan {
+  return {
+    dims: metadata.dims,
+    coords: metadata.coords,
+    shape: metadata.shape,
+    execute(handler: (indices: number[]) => DataValue): NDArray {
+      const totalElements = metadata.shape.reduce((acc, value) => acc * value, 1) || 1;
+
+      if (metadata.shape.length === 0) {
+        return handler([]);
+      }
+
+      const flatResult: DataValue[] = new Array(totalElements);
+
+      for (let flatIndex = 0; flatIndex < totalElements; flatIndex++) {
+        const indices = unravelIndex(flatIndex, metadata.shape);
+        flatResult[flatIndex] = handler(indices);
+      }
+
+      return reshape(flatResult, metadata.shape) as NDArray;
+    }
+  };
+}
+
 function resolveOperandValue(
   operand: WhereOperand,
   targetDims: DimensionName[],
@@ -180,7 +200,7 @@ function resolveOperandValue(
     return targetIndices[targetPos];
   });
 
-  return getAtIndex(operand.data, operandIndices);
+  return operand.block.getValue(operandIndices);
 }
 
 function unravelIndex(flatIndex: number, shape: number[]): number[] {
