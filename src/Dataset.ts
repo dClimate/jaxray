@@ -19,6 +19,7 @@ import {
 import { deepClone, getBytesPerElement, ZARR_ENCODINGS } from './utils.js';
 import { formatCoordinateValue, isTimeCoordinate } from './cf-time.js';
 import { ZarrBackend } from './backends/zarr.js';
+import type { WhereOptions } from './ops/where.js';
 
 export class Dataset {
   private _dataVars: Map<string, DataArray>;
@@ -170,6 +171,24 @@ export class Dataset {
     return Math.round(value * factor) / factor;
   }
 
+  private _datasetOperandFor(
+    varName: string,
+    dataset: Dataset,
+    kind: 'condition' | 'other',
+    required: boolean = true
+  ): DataArray | null {
+    if (!dataset.hasVariable(varName)) {
+      if (required) {
+        throw new Error(
+          `Dataset provided for ${kind} does not contain variable '${varName}'`
+        );
+      }
+      return null;
+    }
+
+    return dataset.getVariable(varName);
+  }
+
   /**
    * Get a data variable
    */
@@ -228,6 +247,45 @@ export class Dataset {
       });
     }
     throw new Error('Key must be a string or array of strings');
+  }
+
+  where(
+    cond: DataArray | Dataset | DataValue,
+    other: DataArray | Dataset | DataValue | null = null,
+    options?: WhereOptions
+  ): Dataset {
+    const resultVars: { [name: string]: DataArray } = {};
+
+    for (const [name, dataArray] of this._dataVars.entries()) {
+      const condition = cond instanceof Dataset
+        ? this._datasetOperandFor(name, cond, 'condition')
+        : cond;
+
+      const otherOperand = other instanceof Dataset
+        ? this._datasetOperandFor(name, other, 'other', false)
+        : other;
+
+      resultVars[name] = dataArray.where(
+        condition as DataArray | DataValue,
+        otherOperand as DataArray | DataValue | null,
+        options
+      );
+    }
+
+    const newCoords: Coordinates = {};
+    for (const dataArray of Object.values(resultVars)) {
+      for (const dim of dataArray.dims) {
+        if (!newCoords[dim]) {
+          newCoords[dim] = dataArray.coords[dim];
+        }
+      }
+    }
+
+    return new Dataset(resultVars, {
+      coords: newCoords,
+      attrs: deepClone(this._attrs),
+      coordAttrs: deepClone(this._coordAttrs)
+    });
   }
 
   /**

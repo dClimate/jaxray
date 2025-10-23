@@ -17,6 +17,14 @@ import {
   StreamChunk
 } from './types.js';
 import { getShape, flatten, reshape, deepClone } from './utils.js';
+import {
+  computeWhere,
+  computeBinaryOp,
+  type WhereOperand,
+  type WhereOptions,
+  type ArrayWhereOperand,
+  type BinaryOpOptions
+} from './ops/where.js';
 import { isTimeCoordinate, parseCFTimeUnits } from './cf-time.js';
 
 export class DataArray {
@@ -429,6 +437,174 @@ export class DataArray {
   }
 
   /**
+   * Apply a condition and choose values between this array (x) and another (y)
+   * Similar to xarray.DataArray.where. Broadcasts across shared dimensions.
+   */
+  where(
+    cond: DataArray | DataValue,
+    other: DataArray | DataValue | null = null,
+    options?: WhereOptions
+  ): DataArray {
+    return DataArray.where(cond, this, other ?? null, options);
+  }
+
+  /**
+   * Static version similar to xr.where(cond, x, y)
+   */
+  static where(
+    cond: DataArray | DataValue,
+    x: DataArray | DataValue,
+    y: DataArray | DataValue,
+    options?: WhereOptions
+  ): DataArray {
+    const condOperand = DataArray._normalizeOperand(cond, 'cond');
+    const xOperand = DataArray._normalizeOperand(x, 'x');
+    const yOperand = DataArray._normalizeOperand(y, 'y');
+
+    const result = computeWhere(condOperand, xOperand, yOperand, options);
+
+    return new DataArray(result.data, {
+      dims: result.dims,
+      coords: result.coords,
+      attrs: result.attrs,
+      name: result.name
+    });
+  }
+
+  add(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this._binaryOperation(
+      other,
+      (left, right) => DataArray._numericBinary('add', left, right, (a, b) => a + b),
+      options,
+      { keepAttrs: 'left', preferNameFrom: 'left' }
+    );
+  }
+
+  subtract(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this._binaryOperation(
+      other,
+      (left, right) => DataArray._numericBinary('subtract', left, right, (a, b) => a - b),
+      options,
+      { keepAttrs: 'left', preferNameFrom: 'left' }
+    );
+  }
+
+  sub(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this.subtract(other, options);
+  }
+
+  multiply(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this._binaryOperation(
+      other,
+      (left, right) => DataArray._numericBinary('multiply', left, right, (a, b) => a * b),
+      options,
+      { keepAttrs: 'left', preferNameFrom: 'left' }
+    );
+  }
+
+  mul(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this.multiply(other, options);
+  }
+
+  divide(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this._binaryOperation(
+      other,
+      (left, right) => DataArray._numericBinary('divide', left, right, (a, b) => a / b),
+      options,
+      { keepAttrs: 'left', preferNameFrom: 'left' }
+    );
+  }
+
+  div(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this.divide(other, options);
+  }
+
+  power(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this._binaryOperation(
+      other,
+      (left, right) => DataArray._numericBinary('power', left, right, (a, b) => Math.pow(a, b)),
+      options,
+      { keepAttrs: 'left', preferNameFrom: 'left' }
+    );
+  }
+
+  pow(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this.power(other, options);
+  }
+
+  greaterThan(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this._binaryOperation(
+      other,
+      (left, right) => DataArray._numericComparison('greaterThan', left, right, (a, b) => a > b),
+      options
+    );
+  }
+
+  gt(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this.greaterThan(other, options);
+  }
+
+  greaterEqual(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this._binaryOperation(
+      other,
+      (left, right) => DataArray._numericComparison('greaterEqual', left, right, (a, b) => a >= b),
+      options
+    );
+  }
+
+  ge(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this.greaterEqual(other, options);
+  }
+
+  lessThan(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this._binaryOperation(
+      other,
+      (left, right) => DataArray._numericComparison('lessThan', left, right, (a, b) => a < b),
+      options
+    );
+  }
+
+  lt(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this.lessThan(other, options);
+  }
+
+  lessEqual(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this._binaryOperation(
+      other,
+      (left, right) => DataArray._numericComparison('lessEqual', left, right, (a, b) => a <= b),
+      options
+    );
+  }
+
+  le(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this.lessEqual(other, options);
+  }
+
+  equal(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this._binaryOperation(
+      other,
+      (left, right) => DataArray._equalityComparison(left, right, (a, b) => a === b),
+      options
+    );
+  }
+
+  eq(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this.equal(other, options);
+  }
+
+  notEqual(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this._binaryOperation(
+      other,
+      (left, right) => DataArray._equalityComparison(left, right, (a, b) => a !== b),
+      options
+    );
+  }
+
+  ne(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
+    return this.notEqual(other, options);
+  }
+
+  /**
    * Convert to a plain JavaScript object
    */
   toObject(): any {
@@ -824,6 +1000,103 @@ export class DataArray {
   }
 
   // Private helper methods
+
+  private _toOperand(): ArrayWhereOperand {
+    return {
+      kind: 'array',
+      data: this._data,
+      dims: this._dims,
+      coords: this._coords,
+      attrs: this._attrs,
+      name: this._name
+    };
+  }
+
+  private static _normalizeOperand(
+    value: DataArray | DataValue | null,
+    label: string
+  ): WhereOperand {
+    if (value instanceof DataArray) {
+      return value._toOperand();
+    }
+
+    if (value === undefined) {
+      throw new Error(`Missing operand '${label}' for DataArray operation`);
+    }
+
+    if (Array.isArray(value)) {
+      throw new Error('Raw array operands are not yet supported. Use DataArray instances instead.');
+    }
+
+    return {
+      kind: 'scalar',
+      value: value as DataValue
+    };
+  }
+
+  private _binaryOperation(
+    other: DataArray | DataValue,
+    operator: (left: DataValue, right: DataValue) => DataValue,
+    options?: BinaryOpOptions,
+    defaults?: BinaryOpOptions
+  ): DataArray {
+    const leftOperand = this._toOperand();
+    const rightOperand = DataArray._normalizeOperand(other, 'other');
+    const keepAttrs = options?.keepAttrs ?? defaults?.keepAttrs;
+    const preferNameFrom = options?.preferNameFrom ?? defaults?.preferNameFrom;
+
+    const result = computeBinaryOp(
+      leftOperand,
+      rightOperand,
+      operator,
+      keepAttrs === undefined && preferNameFrom === undefined
+        ? undefined
+        : { keepAttrs, preferNameFrom }
+    );
+
+    return new DataArray(result.data, {
+      dims: result.dims,
+      coords: result.coords,
+      attrs: result.attrs,
+      name: result.name
+    });
+  }
+
+  private static _numericBinary(
+    opName: string,
+    left: DataValue,
+    right: DataValue,
+    op: (a: number, b: number) => number
+  ): number {
+    if (typeof left !== 'number' || typeof right !== 'number') {
+      throw new Error(
+        `Operation '${opName}' requires numeric operands; received ${typeof left} and ${typeof right}`
+      );
+    }
+    return op(left, right);
+  }
+
+  private static _numericComparison(
+    opName: string,
+    left: DataValue,
+    right: DataValue,
+    op: (a: number, b: number) => boolean
+  ): boolean {
+    if (typeof left !== 'number' || typeof right !== 'number') {
+      throw new Error(
+        `Comparison '${opName}' requires numeric operands; received ${typeof left} and ${typeof right}`
+      );
+    }
+    return op(left, right);
+  }
+
+  private static _equalityComparison(
+    left: DataValue,
+    right: DataValue,
+    op: (a: DataValue, b: DataValue) => boolean
+  ): boolean {
+    return op(left, right);
+  }
 
   private async _selLazy(selection: Selection, options?: SelectionOptions): Promise<DataArray> {
     const loader = this._attrs._lazyLoader;

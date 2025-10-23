@@ -10,6 +10,7 @@ export { Dataset } from './Dataset.js';
 export * from './types.js';
 export * from './utils.js';
 export * from './cf-time.js';
+export type { WhereOptions, BinaryOpOptions } from './ops/where.js';
 
 // Backends
 export { ZarrBackend, type ZarrStore } from './backends/zarr.js';

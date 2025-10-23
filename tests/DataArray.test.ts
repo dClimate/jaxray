@@ -149,6 +149,94 @@ describe('DataArray', () => {
     expect(mean).toBe(3);
   });
 
+  test('should apply where with scalar fallback', () => {
+    const x = new DataArray([0.1, 0.6, 0.4, 0.8], {
+      dims: ['time'],
+      coords: { time: [0, 1, 2, 3] },
+      attrs: { units: 'degC' },
+      name: 'sst'
+    });
+    const cond = new DataArray([true, false, true, false], {
+      dims: ['time'],
+      coords: { time: [0, 1, 2, 3] }
+    });
+
+    const masked = x.where(cond, -1, { keepAttrs: true });
+
+    expect(masked.data).toEqual([0.1, -1, 0.4, -1]);
+    expect(masked.dims).toEqual(['time']);
+    expect(masked.coords['time']).toEqual([0, 1, 2, 3]);
+    expect(masked.name).toBe('sst');
+    expect(masked.attrs).toEqual({ units: 'degC' });
+  });
+
+  test('should broadcast where across distinct dimensions', () => {
+    const cond = new DataArray([true, false], {
+      dims: ['x'],
+      coords: { x: [0, 1] }
+    });
+    const values = new DataArray([1, 2], {
+      dims: ['y'],
+      coords: { y: ['a', 'b'] }
+    });
+
+    const result = DataArray.where(cond, values, 0);
+
+    expect(result.dims).toEqual(['x', 'y']);
+    expect(result.coords['x']).toEqual([0, 1]);
+    expect(result.coords['y']).toEqual(['a', 'b']);
+    expect(result.data).toEqual([
+      [1, 2],
+      [0, 0]
+    ]);
+  });
+
+  test('should support arithmetic and comparison helpers for where usage', () => {
+    const x = new DataArray(
+      [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+      {
+        dims: ['lat'],
+        coords: { lat: Array.from({ length: 10 }, (_, i) => i) },
+        name: 'sst'
+      }
+    );
+
+    const result = DataArray.where(x.lt(0.5), x, x.mul(100));
+
+    expect(result.dims).toEqual(['lat']);
+    expect(result.coords['lat']).toEqual(Array.from({ length: 10 }, (_, i) => i));
+    expect(result.data).toEqual([0, 0.1, 0.2, 0.3, 0.4, 50, 60, 70, 80, 90]);
+    expect(result.name).toBe('sst');
+  });
+
+  test('lt should return boolean DataArray', () => {
+    const x = new DataArray([1, 2, 3], {
+      dims: ['x'],
+      coords: { x: [0, 1, 2] }
+    });
+
+    const mask = x.lt(2);
+
+    expect(mask.data).toEqual([true, false, false]);
+    expect(mask.dims).toEqual(['x']);
+    expect(mask.coords['x']).toEqual([0, 1, 2]);
+  });
+
+  test('multiply should keep attrs and name by default', () => {
+    const x = new DataArray([1, 2, 3], {
+      dims: ['x'],
+      coords: { x: [0, 1, 2] },
+      attrs: { units: 'm' },
+      name: 'distance'
+    });
+
+    const scaled = x.mul(10);
+
+    expect(scaled.data).toEqual([10, 20, 30]);
+    expect(scaled.attrs).toEqual({ units: 'm' });
+    expect(scaled.name).toBe('distance');
+  });
+
   test('should handle attributes', () => {
     const data = [1, 2, 3];
     const attrs = { units: 'meters', description: 'Test data' };

@@ -121,6 +121,44 @@ describe('Dataset', () => {
     expect(doubledPressure?.data).toEqual([200, 400, 600]);
   });
 
+  test('should apply where across dataset variables', () => {
+    const temp = new DataArray([1, 2, 3], {
+      dims: ['x'],
+      coords: { x: [0, 1, 2] }
+    });
+    const humidity = new DataArray([50, 60, 70], {
+      dims: ['x'],
+      coords: { x: [0, 1, 2] }
+    });
+    const ds = new Dataset({ temperature: temp, humidity });
+
+    const cond = new DataArray([true, false, true], {
+      dims: ['x'],
+      coords: { x: [0, 1, 2] }
+    });
+
+    const replacements = new Dataset({
+      temperature: new DataArray([-1, -1, -1], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] }
+      }),
+      humidity: new DataArray([0, 0, 0], {
+        dims: ['x'],
+        coords: { x: [0, 1, 2] }
+      })
+    });
+
+    const masked = ds.where(cond, replacements);
+
+    const maskedTemp = masked.getVariable('temperature');
+    const maskedHumidity = masked.getVariable('humidity');
+
+    expect(maskedTemp?.data).toEqual([1, -1, 3]);
+    expect(maskedHumidity?.data).toEqual([50, 0, 70]);
+    expect(maskedTemp?.dims).toEqual(['x']);
+    expect(maskedHumidity?.coords['x']).toEqual([0, 1, 2]);
+  });
+
   test('should merge two datasets', () => {
     const temp = new DataArray([1, 2, 3], { dims: ['x'] });
     const pressure = new DataArray([100, 200, 300], { dims: ['x'] });
