@@ -302,6 +302,36 @@ describe('DataArray', () => {
     expect(computed.name).toBe('temp');
   });
 
+  test('assignCoords should update coordinates with arrays', () => {
+    const da = new DataArray([1, 2, 3], {
+      dims: ['lon'],
+      coords: { lon: [-170, -160, -150] }
+    });
+
+    const assigned = da.assignCoords({ lon: [-180, -170, -160] });
+
+    expect(assigned.coords.lon).toEqual([-180, -170, -160]);
+    expect(da.coords.lon).toEqual([-170, -160, -150]);
+  });
+
+  test('assignCoords should accept DataArray values', () => {
+    const da = new DataArray([1, 2, 3], {
+      dims: ['lon'],
+      coords: { lon: [-190, 170, 200] }
+    });
+
+    const adjustedValues = da.coords.lon.map(value => (((value + 180) % 360) + 360) % 360 - 180);
+    const adjustedDA = new DataArray(adjustedValues, {
+      dims: ['lon'],
+      coords: { lon: da.coords.lon }
+    });
+
+    const assigned = da.assignCoords({ lon: adjustedDA });
+
+    expect(assigned.coords.lon).toEqual(adjustedValues);
+    expect(da.coords.lon).toEqual([-190, 170, 200]);
+  });
+
   test('should handle attributes', () => {
     const data = [1, 2, 3];
     const attrs = { units: 'meters', description: 'Test data' };

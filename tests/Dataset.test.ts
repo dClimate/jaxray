@@ -136,6 +136,53 @@ describe('Dataset', () => {
     expect(ds.dataVars.sort()).toEqual(['pressure', 'temperature']);
   });
 
+  test('assignCoords should update dataset and variables', () => {
+    const temp = new DataArray([10, 11, 12], {
+      dims: ['time'],
+      coords: { time: [0, 1, 2] }
+    });
+    const ds = new Dataset({ temperature: temp });
+
+    const assigned = ds.assignCoords({ time: ['2020-01-01', '2020-01-02', '2020-01-03'] });
+    const tempAssigned = assigned.getVariable('temperature');
+
+    expect(assigned.coords.time).toEqual(['2020-01-01', '2020-01-02', '2020-01-03']);
+    expect(tempAssigned.coords.time).toEqual(['2020-01-01', '2020-01-02', '2020-01-03']);
+
+    // original untouched
+    expect(ds.coords.time).toEqual([0, 1, 2]);
+  });
+
+  test('assignCoords should accept DataArray values', () => {
+    const temp = new DataArray([10, 11, 12], {
+      dims: ['time'],
+      coords: { time: [0, 1, 2] }
+    });
+    const ds = new Dataset({ temperature: temp });
+
+    const newTime = new DataArray(['a', 'b', 'c'], {
+      dims: ['time'],
+      coords: { time: temp.coords.time }
+    });
+
+    const assigned = ds.assignCoords({ time: newTime });
+
+    expect(assigned.coords.time).toEqual(['a', 'b', 'c']);
+    expect(assigned.getVariable('temperature').coords.time).toEqual(['a', 'b', 'c']);
+  });
+
+  test('assignCoords should validate length', () => {
+    const temp = new DataArray([10, 11, 12], {
+      dims: ['time'],
+      coords: { time: [0, 1, 2] }
+    });
+    const ds = new Dataset({ temperature: temp });
+
+    expect(() => ds.assignCoords({ time: ['2020-01-01'] })).toThrow(
+      /length/
+    );
+  });
+
   test('compute should materialize lazy Dataset variables', async () => {
     const raw = [
       [1, 2],

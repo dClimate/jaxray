@@ -518,6 +518,60 @@ export class DataArray {
     });
   }
 
+  cloneWith(options?: { coords?: Coordinates; attrs?: Attributes; name?: string }): DataArray {
+    const clone = Object.create(DataArray.prototype) as DataArray;
+    clone._block = this._block;
+    clone._dims = [...this._dims];
+    clone._shape = [...this._shape];
+    clone._precision = this._precision;
+    clone._coords = options?.coords ? deepClone(options.coords) : deepClone(this._coords);
+    clone._attrs = options?.attrs ? deepClone(options.attrs) : deepClone(this._attrs);
+    clone._name = options?.name ?? this._name;
+    return clone;
+  }
+
+  assignCoords(mapping: { [dimension: string]: CoordinateValue[] | DataArray }): DataArray {
+    const updatedCoords = deepClone(this._coords);
+
+    for (const [dim, value] of Object.entries(mapping)) {
+      const dimIndex = this._dims.indexOf(dim);
+      if (dimIndex === -1) {
+        throw new Error(`Cannot assign coordinates for non-existent dimension '${dim}'`);
+      }
+
+      let values: CoordinateValue[];
+
+      if (value instanceof DataArray) {
+        if (value.dims.length !== 1 || value.dims[0] !== dim) {
+          throw new Error(`Coordinate DataArray for '${dim}' must be 1D and share the same dimension`);
+        }
+
+        const data = value.data;
+        if (!Array.isArray(data)) {
+          throw new Error(`Coordinate DataArray for '${dim}' must be 1D`);
+        }
+
+        values = (data as CoordinateValue[]).map(v =>
+          v instanceof Date ? new Date(v.getTime()) : v
+        );
+      } else if (Array.isArray(value)) {
+        values = value.map(v => (v instanceof Date ? new Date(v.getTime()) : v));
+      } else {
+        throw new Error(`assignCoords requires an array or DataArray for dimension '${dim}'`);
+      }
+
+      if (values.length !== this._shape[dimIndex]) {
+        throw new Error(
+          `Coordinate length for '${dim}' (${values.length}) does not match dimension size (${this._shape[dimIndex]})`
+        );
+      }
+
+      updatedCoords[dim] = values;
+    }
+
+    return this.cloneWith({ coords: updatedCoords });
+  }
+
   add(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
     return this._binaryOperation(
       other,

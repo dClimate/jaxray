@@ -523,6 +523,76 @@ export class Dataset {
     });
   }
 
+  assignCoords(coords: { [dimension: string]: CoordinateValue[] | DataArray }): Dataset {
+    const updatedCoords = deepClone(this._coords);
+    const sizes = this.sizes;
+    const dimsToUpdate = Object.keys(coords);
+
+    for (const dim of dimsToUpdate) {
+      if (sizes[dim] === undefined) {
+        throw new Error(`Dimension '${dim}' not found in dataset`);
+      }
+
+      const coordValue = coords[dim];
+      let values: CoordinateValue[];
+
+      if (coordValue instanceof DataArray) {
+        if (coordValue.dims.length !== 1 || coordValue.dims[0] !== dim) {
+          throw new Error(`Coordinate DataArray for '${dim}' must be 1D and share the same dimension`);
+        }
+
+        const data = coordValue.data;
+        if (!Array.isArray(data)) {
+          throw new Error(`Coordinate DataArray for '${dim}' must be 1D`);
+        }
+
+        values = (data as CoordinateValue[]).map(v =>
+          v instanceof Date ? new Date(v.getTime()) : v
+        );
+      } else if (Array.isArray(coordValue)) {
+        values = coordValue.map(value =>
+          value instanceof Date ? new Date(value.getTime()) : value
+        );
+      } else {
+        throw new Error(`assignCoords requires an array or DataArray for dimension '${dim}'`);
+      }
+
+      if (values.length !== sizes[dim]) {
+        throw new Error(
+          `Coordinate array length for '${dim}' (${values.length}) does not match dimension size (${sizes[dim]})`
+        );
+      }
+
+      updatedCoords[dim] = values;
+    }
+
+    const newDataVars: { [name: string]: DataArray } = {};
+
+    for (const [name, dataArray] of this._dataVars.entries()) {
+      let needsUpdate = false;
+      const coordsForArray = dataArray.coords;
+
+      for (const dim of dimsToUpdate) {
+        if (dataArray.dims.includes(dim)) {
+          coordsForArray[dim] = updatedCoords[dim].map(value =>
+            value instanceof Date ? new Date(value.getTime()) : value
+          );
+          needsUpdate = true;
+        }
+      }
+
+      newDataVars[name] = needsUpdate
+        ? dataArray.cloneWith({ coords: coordsForArray })
+        : dataArray;
+    }
+
+    return new Dataset(newDataVars, {
+      coords: updatedCoords,
+      attrs: this._attrs,
+      coordAttrs: this._coordAttrs
+    });
+  }
+
   /**
    * Merge with another dataset
    */
