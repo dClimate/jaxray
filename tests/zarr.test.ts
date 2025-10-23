@@ -127,7 +127,7 @@ describe('ZarrBackend', () => {
     const dataVar = dataset.getVariable('data');
 
     // Test lazy array metadata
-    expect(dataVar.attrs._lazy).toBe(true);
+    expect(dataVar.isLazy).toBe(true);
     expect(dataVar.attrs._zarr_path).toBe('data');
   });
 
@@ -146,7 +146,7 @@ describe('ZarrBackend', () => {
     const dataVar = dataset.getVariable('data');
 
     // Verify lazy loading metadata is stored correctly
-    expect(dataVar.attrs._lazy).toBe(true);
+    expect(dataVar.isLazy).toBe(true);
     expect(dataVar.attrs._zarr_shape).toEqual([5, 10]);
     expect(dataVar.attrs.custom).toBe('attribute');
   });

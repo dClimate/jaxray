@@ -46,7 +46,18 @@ export interface DataArrayOptions {
   name?: string;
   lazy?: boolean;
   virtualShape?: number[];
+  lazyLoader?: LazyLoader;
 }
+
+/**
+ * Range specification for lazy loaders
+ */
+export type LazyIndexRange = { start: number; stop: number } | number;
+
+/**
+ * Loader function signature for lazy DataArrays
+ */
+export type LazyLoader = (ranges: { [dimension: string]: LazyIndexRange }) => Promise<NDArray> | NDArray;
 
 /**
  * Options for creating a Dataset

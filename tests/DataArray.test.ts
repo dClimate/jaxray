@@ -237,6 +237,71 @@ describe('DataArray', () => {
     expect(scaled.name).toBe('distance');
   });
 
+  test('compute should materialize lazy DataArray', async () => {
+    const raw = [
+      [1, 2],
+      [3, 4]
+    ];
+
+    const loader = async (ranges: { [dim: string]: { start: number; stop: number } | number }) => {
+      const sliceAxis = (values: number[], range: { start: number; stop: number } | number) => {
+        if (typeof range === 'number') {
+          return [values[range]];
+        }
+        const start = range?.start ?? 0;
+        const stop = range?.stop ?? values.length;
+        return values.slice(start, stop);
+      };
+
+      const xRange = ranges.x ?? { start: 0, stop: raw.length };
+      const yRange = ranges.y ?? { start: 0, stop: raw[0].length };
+
+      const rows = typeof xRange === 'number'
+        ? [raw[xRange]]
+        : raw.slice(xRange.start ?? 0, xRange.stop ?? raw.length);
+
+      const result = rows.map(row => {
+        const slice = sliceAxis(row, yRange);
+        return slice;
+      });
+
+      if (typeof xRange === 'number' && typeof yRange === 'number') {
+        return result[0][0];
+      }
+      if (typeof xRange === 'number') {
+        return result[0];
+      }
+      if (typeof yRange === 'number') {
+        return result.map(row => row[0]);
+      }
+      return result;
+    };
+
+    const lazy = new DataArray(null, {
+      lazy: true,
+      virtualShape: [2, 2],
+      lazyLoader: loader,
+      dims: ['x', 'y'],
+      coords: {
+        x: [0, 1],
+        y: [0, 1]
+      },
+      attrs: { units: 'C' },
+      name: 'temp'
+    });
+
+    expect(lazy.isLazy).toBe(true);
+    expect(() => lazy.data).toThrow('Materializing a lazy DataBlock requires an explicit execution step.');
+
+    const computed = await lazy.compute();
+
+    expect(computed).not.toBe(lazy);
+    expect(computed.isLazy).toBe(false);
+    expect(computed.data).toEqual(raw);
+    expect(computed.attrs).toEqual({ units: 'C' });
+    expect(computed.name).toBe('temp');
+  });
+
   test('should handle attributes', () => {
     const data = [1, 2, 3];
     const attrs = { units: 'meters', description: 'Test data' };

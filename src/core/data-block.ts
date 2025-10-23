@@ -1,9 +1,14 @@
-import { NDArray, DataValue } from '../types.js';
+import {
+  NDArray,
+  DataValue,
+  LazyLoader,
+  LazyIndexRange
+} from '../types.js';
 import { deepClone, getShape, getAtIndex } from '../utils.js';
 
 export type DataBlockKind = 'eager' | 'lazy';
 
-export interface DataBlock {
+interface BaseDataBlock {
   readonly kind: DataBlockKind;
   readonly shape: number[];
   materialize(): NDArray;
@@ -11,12 +16,18 @@ export interface DataBlock {
   clone(): DataBlock;
 }
 
-export interface LazyBlockOptions {
-  materialize?: () => NDArray;
-  getValue?: (indices: number[]) => DataValue;
+export interface EagerDataBlock extends BaseDataBlock {
+  kind: 'eager';
 }
 
-export function createEagerBlock(data: NDArray): DataBlock {
+export interface LazyDataBlock extends BaseDataBlock {
+  kind: 'lazy';
+  fetch(ranges: Record<string, LazyIndexRange>): Promise<NDArray>;
+}
+
+export type DataBlock = EagerDataBlock | LazyDataBlock;
+
+export function createEagerBlock(data: NDArray): EagerDataBlock {
   const payload = deepClone(data);
   const shape = getShape(payload);
 
@@ -35,27 +46,33 @@ export function createEagerBlock(data: NDArray): DataBlock {
   };
 }
 
-export function createPlaceholderLazyBlock(shape: number[], options: LazyBlockOptions = {}): DataBlock {
-  const materialize = options.materialize;
-  const getValueFn = options.getValue;
+export function createLazyBlock(
+  shape: number[],
+  loader: LazyLoader
+): LazyDataBlock {
+  const normalizedShape = [...shape];
+
+  const fetch = (ranges: Record<string, LazyIndexRange>): Promise<NDArray> => {
+    const result = loader(ranges);
+    return Promise.resolve(result);
+  };
 
   return {
     kind: 'lazy',
-    shape: [...shape],
+    shape: normalizedShape,
     materialize(): NDArray {
-      if (materialize) {
-        return materialize();
-      }
-      throw new Error('Materializing a lazy DataBlock requires an execution engine.');
+      throw new Error('Materializing a lazy DataBlock requires an explicit execution step.');
     },
-    getValue(indices: number[]): DataValue {
-      if (getValueFn) {
-        return getValueFn(indices);
-      }
-      throw new Error('Random access on a lazy DataBlock requires an execution engine.');
+    getValue(): DataValue {
+      throw new Error('Random access on a lazy DataBlock requires explicit execution.');
     },
     clone(): DataBlock {
-      return createPlaceholderLazyBlock(shape, options);
-    }
+      return createLazyBlock(normalizedShape, loader);
+    },
+    fetch
   };
+}
+
+export function isLazyBlock(block: DataBlock): block is LazyDataBlock {
+  return block.kind === 'lazy';
 }

@@ -121,6 +121,74 @@ describe('Dataset', () => {
     expect(doubledPressure?.data).toEqual([200, 400, 600]);
   });
 
+  test('compute should materialize lazy Dataset variables', async () => {
+    const raw = [
+      [1, 2],
+      [3, 4]
+    ];
+
+    const loader = async (ranges: { [dim: string]: { start: number; stop: number } | number }) => {
+      const sliceAxis = (values: number[], range: { start: number; stop: number } | number) => {
+        if (typeof range === 'number') {
+          return [values[range]];
+        }
+        const start = range?.start ?? 0;
+        const stop = range?.stop ?? values.length;
+        return values.slice(start, stop);
+      };
+
+      const xRange = ranges.x ?? { start: 0, stop: raw.length };
+      const yRange = ranges.y ?? { start: 0, stop: raw[0].length };
+
+      const rows = typeof xRange === 'number'
+        ? [raw[xRange]]
+        : raw.slice(xRange.start ?? 0, xRange.stop ?? raw.length);
+
+      const result = rows.map(row => {
+        const slice = sliceAxis(row, yRange);
+        return slice;
+      });
+
+      if (typeof xRange === 'number' && typeof yRange === 'number') {
+        return result[0][0];
+      }
+      if (typeof xRange === 'number') {
+        return result[0];
+      }
+      if (typeof yRange === 'number') {
+        return result.map(row => row[0]);
+      }
+      return result;
+    };
+
+    const lazyVar = new DataArray(null, {
+      lazy: true,
+      virtualShape: [2, 2],
+      lazyLoader: loader,
+      dims: ['x', 'y'],
+      coords: {
+        x: [0, 1],
+        y: [0, 1]
+      },
+      attrs: { units: 'C' },
+      name: 'temp'
+    });
+
+    const ds = new Dataset({ temperature: lazyVar });
+
+    expect(ds.getVariable('temperature').isLazy).toBe(true);
+
+    const computed = await ds.compute();
+    const computedTemp = computed.getVariable('temperature');
+
+    expect(computedTemp.isLazy).toBe(false);
+    expect(computedTemp.data).toEqual(raw);
+    expect(computedTemp.attrs).toEqual({ units: 'C' });
+
+    // Original dataset remains lazy
+    expect(ds.getVariable('temperature').isLazy).toBe(true);
+  });
+
   test('should apply where across dataset variables', () => {
     const temp = new DataArray([1, 2, 3], {
       dims: ['x'],

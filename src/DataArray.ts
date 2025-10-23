@@ -19,7 +19,8 @@ import {
 import { getShape, flatten, reshape, deepClone } from './utils.js';
 import {
   createEagerBlock,
-  createPlaceholderLazyBlock,
+  createLazyBlock,
+  isLazyBlock,
   type DataBlock
 } from './core/data-block.js';
 import {
@@ -43,12 +44,14 @@ export class DataArray {
 
   constructor(data: NDArray, options: DataArrayOptions = {}) {
     if (options.lazy) {
-      if (!options.virtualShape) throw new Error("lazy DataArray requires virtualShape");
-      this._block = createPlaceholderLazyBlock(options.virtualShape);
-      this._shape = [...options.virtualShape];   // real shape
+      if (!options.virtualShape) throw new Error('lazy DataArray requires virtualShape');
+      if (!options.lazyLoader) throw new Error('lazy DataArray requires lazyLoader');
+      const shape = [...options.virtualShape];
+      this._shape = shape;
       this._attrs = options.attrs || {};
       this._name = options.name;
-      this._dims = options.dims ? [...options.dims] : this._shape.map((_, i) => `dim_${i}`);
+      this._dims = options.dims ? [...options.dims] : shape.map((_, i) => `dim_${i}`);
+      this._block = createLazyBlock(shape, options.lazyLoader);
       // coords: do NOT enforce lengths; just store if provided, else generate index arrays by size
       this._coords = {};
       if (options.coords) {
@@ -177,11 +180,41 @@ export class DataArray {
   }
 
   /**
+   * Check if the underlying data block is lazy
+   */
+  get isLazy(): boolean {
+    return isLazyBlock(this._block);
+  }
+
+  /**
+   * Materialize the DataArray if it is lazy. Returns the original instance for eager arrays.
+   */
+  async compute(): Promise<DataArray> {
+    if (!isLazyBlock(this._block)) {
+      return this;
+    }
+
+    const ranges: { [dimension: string]: { start: number; stop: number } } = {};
+    for (let i = 0; i < this._dims.length; i++) {
+      ranges[this._dims[i]] = { start: 0, stop: this._shape[i] };
+    }
+
+    const data = await this._block.fetch(ranges);
+
+    return new DataArray(data, {
+      dims: this._dims,
+      coords: this._coords,
+      attrs: deepClone(this._attrs),
+      name: this._name
+    });
+  }
+
+  /**
    * Select data by coordinate labels
    */
   async sel(selection: Selection, options?: SelectionOptions): Promise<DataArray> {
     // Check if this is a lazy-loaded array with a loader function
-    if (this._attrs._lazy && this._attrs._lazyLoader) {
+    if (isLazyBlock(this._block)) {
       return this._selLazy(selection, options);
     }
 
@@ -468,9 +501,9 @@ export class DataArray {
     const yOperand = DataArray._normalizeOperand(y, 'y');
 
     if (
-      (condOperand.kind === 'array' && condOperand.block.kind === 'lazy') ||
-      (xOperand.kind === 'array' && xOperand.block.kind === 'lazy') ||
-      (yOperand.kind === 'array' && yOperand.block.kind === 'lazy')
+      (condOperand.kind === 'array' && isLazyBlock(condOperand.block)) ||
+      (xOperand.kind === 'array' && isLazyBlock(xOperand.block)) ||
+      (yOperand.kind === 'array' && isLazyBlock(yOperand.block))
     ) {
       throw new Error('where on lazy DataArray operands is not yet supported.');
     }
@@ -1057,7 +1090,7 @@ export class DataArray {
     const leftOperand = this._toOperand();
     const rightOperand = DataArray._normalizeOperand(other, 'other');
 
-    if (leftOperand.block.kind === 'lazy' || (rightOperand.kind === 'array' && rightOperand.block.kind === 'lazy')) {
+    if (isLazyBlock(leftOperand.block) || (rightOperand.kind === 'array' && isLazyBlock(rightOperand.block))) {
       throw new Error('Binary operations on lazy DataArray operands are not yet supported.');
     }
     const keepAttrs = options?.keepAttrs ?? defaults?.keepAttrs;
@@ -1117,7 +1150,10 @@ export class DataArray {
   }
 
   private async _selLazy(selection: Selection, options?: SelectionOptions): Promise<DataArray> {
-    const loader = this._attrs._lazyLoader;
+    if (!isLazyBlock(this._block)) {
+      throw new Error('Attempted lazy selection on non-lazy DataArray');
+    }
+    const loader = this._block.fetch;
 
     // Build index ranges for each dimension
     const indexRanges: { [dim: string]: { start: number; stop: number } | number } = {};
@@ -1160,14 +1196,14 @@ export class DataArray {
     try {
       const data = await loader(indexRanges);
 
-      if (!data) {
+      if (data === undefined || data === null) {
         throw new Error('Lazy loader returned undefined/null data');
       }
 
       return new DataArray(data, {
         dims: newDims,
         coords: newCoords,
-        attrs: { ...this._attrs, _lazy: false, _lazyLoader: undefined }, // Mark as no longer lazy
+        attrs: deepClone(this._attrs),
         name: this._name
       });
     } catch (error) {

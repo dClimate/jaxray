@@ -13,7 +13,8 @@ export * from './cf-time.js';
 export type { WhereOptions, BinaryOpOptions } from './ops/where.js';
 export {
   createEagerBlock,
-  createPlaceholderLazyBlock
+  createLazyBlock,
+  isLazyBlock
 } from './core/data-block.js';
 export type { DataBlock, DataBlockKind } from './core/data-block.js';
 

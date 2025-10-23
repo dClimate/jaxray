@@ -298,6 +298,20 @@ export class Dataset {
   /**
    * Remove a data variable
    */
+  async compute(): Promise<Dataset> {
+    const computedVars: { [name: string]: DataArray } = {};
+
+    for (const [name, dataArray] of this._dataVars.entries()) {
+      computedVars[name] = await dataArray.compute();
+    }
+
+    return new Dataset(computedVars, {
+      coords: this._coords,
+      attrs: this._attrs,
+      coordAttrs: this._coordAttrs
+    });
+  }
+
   removeVariable(name: string): boolean {
     return this._dataVars.delete(name);
   }

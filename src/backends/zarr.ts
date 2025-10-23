@@ -285,6 +285,7 @@ export class ZarrBackend {
       dataVars[arr.name] = new DataArray(null, {
         lazy: true,
         virtualShape: arr.shape,
+        lazyLoader: lazyLoader,
         dims: arr.dims,  // Use real dims
         coords: perDimCoords,
         attrs: {
@@ -294,8 +295,6 @@ export class ZarrBackend {
           _zarr_coords: perDimCoords, // Store coords here
           _coordAttrs: coordAttrs, // Store coordinate attributes for time conversion
           _zarr_data_type: arr.meta.data_type, // Store data type for byte size calculation
-          _lazy: true,
-          _lazyLoader: lazyLoader, // Provide loader function
           codecs: arr.meta.codecs, // Store codecs for encryption detection
         },
         name: arr.name,
