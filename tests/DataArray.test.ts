@@ -332,6 +332,25 @@ describe('DataArray', () => {
     expect(da.coords.lon).toEqual([-190, 170, 200]);
   });
 
+  test('squeeze should drop singleton dimensions', () => {
+    const da = new DataArray([
+      [1],
+      [2]
+    ], {
+      dims: ['x', 'y'],
+      coords: {
+        x: [0, 1],
+        y: [0]
+      }
+    });
+
+    const squeezed = da.squeeze();
+
+    expect(squeezed.dims).toEqual(['x']);
+    expect(squeezed.data).toEqual([1, 2]);
+    expect(squeezed.coords.x).toEqual([0, 1]);
+  });
+
   test('should handle attributes', () => {
     const data = [1, 2, 3];
     const attrs = { units: 'meters', description: 'Test data' };

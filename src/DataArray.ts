@@ -572,6 +572,36 @@ export class DataArray {
     return this.cloneWith({ coords: updatedCoords });
   }
 
+  squeeze(): DataArray {
+    const newDims: DimensionName[] = [];
+    const newCoords: Coordinates = {};
+    const squeezedIndices: number[] = [];
+
+    for (let i = 0; i < this._dims.length; i++) {
+      const dim = this._dims[i];
+      const size = this._shape[i];
+      if (size === 1) {
+        squeezedIndices.push(i);
+        continue;
+      }
+      newDims.push(dim);
+      newCoords[dim] = this._coords[dim];
+    }
+
+    if (newDims.length === this._dims.length) {
+      return this;
+    }
+
+    const newData = this._reshapeSqueezed(this._block.materialize(), squeezedIndices);
+
+    return new DataArray(newData, {
+      dims: newDims,
+      coords: newCoords,
+      attrs: deepClone(this._attrs),
+      name: this._name
+    });
+  }
+
   add(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
     return this._binaryOperation(
       other,
@@ -1667,6 +1697,26 @@ export class DataArray {
     }
 
     return data.map((item: any) => this._divideArray(item, divisor)) as NDArray;
+  }
+
+  private _reshapeSqueezed(data: NDArray, squeezedDims: number[]): NDArray {
+    if (!Array.isArray(data) || squeezedDims.length === 0) {
+      return data;
+    }
+
+    const helper = (input: any, dimIndex: number): any => {
+      if (!Array.isArray(input)) {
+        return input;
+      }
+
+      if (squeezedDims.includes(dimIndex) && input.length === 1) {
+        return helper(input[0], dimIndex + 1);
+      }
+
+      return input.map(child => helper(child, dimIndex + 1));
+    };
+
+    return helper(data, 0) as NDArray;
   }
 
   /**

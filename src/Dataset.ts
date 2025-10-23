@@ -587,9 +587,86 @@ export class Dataset {
     }
 
     return new Dataset(newDataVars, {
-      coords: updatedCoords,
+      coords: deepClone(updatedCoords),
       attrs: this._attrs,
       coordAttrs: this._coordAttrs
+    });
+  }
+
+  dropVars(names: string | string[]): Dataset {
+    const dropSet = new Set(Array.isArray(names) ? names : [names]);
+    const newDataVars: { [name: string]: DataArray } = {};
+
+    for (const [name, dataArray] of this._dataVars.entries()) {
+      if (!dropSet.has(name)) {
+        newDataVars[name] = dataArray;
+      }
+    }
+
+    if (Object.keys(newDataVars).length === this._dataVars.size) {
+      return this;
+    }
+
+    const newCoords: Coordinates = {};
+    const newCoordAttrs: { [coordName: string]: Attributes } = {};
+    const usedDims = new Set<DimensionName>();
+
+    for (const dataArray of Object.values(newDataVars)) {
+      for (const dim of dataArray.dims) {
+        usedDims.add(dim);
+      }
+    }
+
+    for (const dim of usedDims) {
+      for (const dataArray of Object.values(newDataVars)) {
+        if (dataArray.dims.includes(dim)) {
+          newCoords[dim] = dataArray.coords[dim];
+          if (this._coordAttrs[dim]) {
+            newCoordAttrs[dim] = this._coordAttrs[dim];
+          }
+          break;
+        }
+      }
+    }
+
+    return new Dataset(newDataVars, {
+      coords: deepClone(newCoords),
+      attrs: this._attrs,
+      coordAttrs: deepClone(newCoordAttrs)
+    });
+  }
+
+  squeeze(): Dataset {
+    const newDataVars: { [name: string]: DataArray } = {};
+    const usedDims = new Set<DimensionName>();
+
+    for (const [name, dataArray] of this._dataVars.entries()) {
+      const squeezed = dataArray.squeeze();
+      newDataVars[name] = squeezed;
+      for (const dim of squeezed.dims) {
+        usedDims.add(dim);
+      }
+    }
+
+    const newCoords: Coordinates = {};
+    const newCoordAttrs: { [coordName: string]: Attributes } = {};
+
+    for (const dim of usedDims) {
+      for (const dataArray of Object.values(newDataVars)) {
+        if (dataArray.dims.includes(dim)) {
+          newCoords[dim] = dataArray.coords[dim];
+          if (this._coordAttrs[dim]) {
+            newCoordAttrs[dim] = this._coordAttrs[dim];
+          }
+          break;
+        }
+      }
+    }
+
+    return new Dataset(newDataVars, {
+      coords: deepClone(newCoords),
+      attrs: this._attrs,
+      coordAttrs: deepClone(newCoordAttrs)
     });
   }
 

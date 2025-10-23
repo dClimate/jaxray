@@ -183,6 +183,49 @@ describe('Dataset', () => {
     );
   });
 
+  test('dropVars should remove selected variables', () => {
+    const temp = new DataArray([1, 2], { dims: ['x'], coords: { x: [0, 1] } });
+    const humidity = new DataArray([50, 60], { dims: ['x'], coords: { x: [0, 1] } });
+    const ds = new Dataset({ temperature: temp, humidity });
+
+    const dropped = ds.dropVars('humidity');
+
+    expect(dropped.dataVars).toEqual(['temperature']);
+    expect(() => dropped.getVariable('humidity')).toThrow();
+    expect(dropped.coords.x).toEqual([0, 1]);
+  });
+
+  test('squeeze should drop singleton dimensions across variables', () => {
+    const temperature = new DataArray([
+      [1],
+      [2]
+    ], {
+      dims: ['station', 'extra'],
+      coords: {
+        station: [0, 1],
+        extra: [0]
+      }
+    });
+
+    const humidity = new DataArray([
+      [50],
+      [60]
+    ], {
+      dims: ['station', 'extra'],
+      coords: {
+        station: [0, 1],
+        extra: [0]
+      }
+    });
+
+    const ds = new Dataset({ temperature, humidity });
+    const squeezed = ds.squeeze();
+
+    expect(squeezed.getVariable('temperature').dims).toEqual(['station']);
+    expect(squeezed.coords.station).toEqual([0, 1]);
+    expect(squeezed.coords.extra).toBeUndefined();
+  });
+
   test('compute should materialize lazy Dataset variables', async () => {
     const raw = [
       [1, 2],
