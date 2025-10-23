@@ -121,6 +121,21 @@ describe('Dataset', () => {
     expect(doubledPressure?.data).toEqual([200, 400, 600]);
   });
 
+  test('rename should rename data variables', () => {
+    const temp = new DataArray([1, 2, 3], { dims: ['x'] });
+    const pressure = new DataArray([100, 200, 300], { dims: ['x'] });
+    const ds = new Dataset({ temperature: temp, pressure });
+
+    const renamed = ds.rename({ temperature: 'temp_c' });
+
+    expect(renamed.dataVars.sort()).toEqual(['pressure', 'temp_c']);
+    expect(renamed.getVariable('temp_c').data).toEqual([1, 2, 3]);
+    expect(() => renamed.getVariable('temperature')).toThrow();
+
+    // Original dataset unchanged
+    expect(ds.dataVars.sort()).toEqual(['pressure', 'temperature']);
+  });
+
   test('compute should materialize lazy Dataset variables', async () => {
     const raw = [
       [1, 2],

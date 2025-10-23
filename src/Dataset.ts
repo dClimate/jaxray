@@ -495,6 +495,34 @@ export class Dataset {
     });
   }
 
+  rename(mapping: { [oldName: string]: string }): Dataset {
+    const newDataVars: { [name: string]: DataArray } = {};
+    const usedNewNames = new Set<string>();
+
+    for (const key of Object.keys(mapping)) {
+      if (!this._dataVars.has(key)) {
+        throw new Error(`Cannot rename non-existent variable '${key}'`);
+      }
+    }
+
+    for (const [name, dataArray] of this._dataVars.entries()) {
+      const newName = mapping[name] ?? name;
+
+      if (usedNewNames.has(newName)) {
+        throw new Error(`Duplicate target name '${newName}' in rename mapping`);
+      }
+
+      usedNewNames.add(newName);
+      newDataVars[newName] = dataArray;
+    }
+
+    return new Dataset(newDataVars, {
+      coords: this._coords,
+      attrs: this._attrs,
+      coordAttrs: this._coordAttrs
+    });
+  }
+
   /**
    * Merge with another dataset
    */
