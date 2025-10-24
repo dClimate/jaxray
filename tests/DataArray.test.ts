@@ -351,6 +351,29 @@ describe('DataArray', () => {
     expect(squeezed.coords.x).toEqual([0, 1]);
   });
 
+  test('rolling mean should compute trailing average', () => {
+    const da = new DataArray([1, 2, 3, 4], {
+      dims: ['time'],
+      coords: { time: [0, 1, 2, 3] }
+    });
+
+    const rolled = da.rolling('time', 2).mean();
+
+    expect(rolled.data).toEqual([null, 1.5, 2.5, 3.5]);
+    expect(rolled.coords.time).toEqual([0, 1, 2, 3]);
+  });
+
+  test('rolling sum center should align window', () => {
+    const da = new DataArray([1, 2, 3, 4, 5], {
+      dims: ['time'],
+      coords: { time: [0, 1, 2, 3, 4] }
+    });
+
+    const rolled = da.rolling('time', 3, { center: true, minPeriods: 2 }).sum();
+
+    expect(rolled.data).toEqual([3, 6, 9, 12, 9]);
+  });
+
   test('should handle attributes', () => {
     const data = [1, 2, 3];
     const attrs = { units: 'meters', description: 'Test data' };

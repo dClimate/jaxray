@@ -14,12 +14,14 @@ import {
   DataValue,
   SelectionOptions,
   StreamOptions,
-  StreamChunk
+  StreamChunk,
+  RollingOptions
 } from './types.js';
 import { deepClone, getBytesPerElement, ZARR_ENCODINGS } from './utils.js';
-import { formatCoordinateValue, isTimeCoordinate } from './cf-time.js';
+import { formatCoordinateValue, isTimeCoordinate } from './time/cf-time.js';
 import { ZarrBackend } from './backends/zarr.js';
 import type { WhereOptions } from './ops/where.js';
+import { DatasetRolling } from './DatasetRolling.js';
 
 export class Dataset {
   private _dataVars: Map<string, DataArray>;
@@ -593,6 +595,10 @@ export class Dataset {
     });
   }
 
+  rolling(dim: DimensionName, window: number, options?: RollingOptions): DatasetRolling {
+    return new DatasetRolling(this, dim, window, options ?? {});
+  }
+
   dropVars(names: string | string[]): Dataset {
     const dropSet = new Set(Array.isArray(names) ? names : [names]);
     const newDataVars: { [name: string]: DataArray } = {};
@@ -1115,3 +1121,4 @@ export class Dataset {
     return chunkSelection;
   }
 }
+

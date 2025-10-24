@@ -226,6 +226,24 @@ describe('Dataset', () => {
     expect(squeezed.coords.extra).toBeUndefined();
   });
 
+  test('rolling mean should apply to dataset variables', () => {
+    const temperature = new DataArray([1, 2, 3, 4], {
+      dims: ['time'],
+      coords: { time: [0, 1, 2, 3] }
+    });
+    const humidity = new DataArray([10, 20, 30, 40], {
+      dims: ['time'],
+      coords: { time: [0, 1, 2, 3] }
+    });
+
+    const ds = new Dataset({ temperature, humidity });
+
+    const rolled = ds.rolling('time', 2).mean();
+
+    expect(rolled.getVariable('temperature').data).toEqual([null, 1.5, 2.5, 3.5]);
+    expect(rolled.getVariable('humidity').data).toEqual([null, 15, 25, 35]);
+  });
+
   test('compute should materialize lazy Dataset variables', async () => {
     const raw = [
       [1, 2],

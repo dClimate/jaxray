@@ -14,7 +14,8 @@ import {
   CoordinateValue,
   SelectionOptions,
   StreamOptions,
-  StreamChunk
+  StreamChunk,
+  RollingOptions
 } from './types.js';
 import { getShape, flatten, reshape, deepClone } from './utils.js';
 import {
@@ -31,7 +32,7 @@ import {
   type ArrayWhereOperand,
   type BinaryOpOptions
 } from './ops/where.js';
-import { isTimeCoordinate, parseCFTimeUnits } from './cf-time.js';
+import { isTimeCoordinate, parseCFTimeUnits } from './time/cf-time.js';
 
 export class DataArray {
   private _block: DataBlock;
@@ -600,6 +601,10 @@ export class DataArray {
       attrs: deepClone(this._attrs),
       name: this._name
     });
+  }
+
+  rolling(dim: DimensionName, window: number, options?: RollingOptions): DataArrayRolling {
+    return new DataArrayRolling(this, dim, window, options ?? {});
   }
 
   add(other: DataArray | DataValue, options?: BinaryOpOptions): DataArray {
@@ -1719,6 +1724,86 @@ export class DataArray {
     return helper(data, 0) as NDArray;
   }
 
+  _applyRolling(
+    dimIndex: number,
+    window: number,
+    options: RollingOptions,
+    reducer: 'mean' | 'sum'
+  ): NDArray {
+    const materialized = this._block.materialize();
+
+    const apply = (input: any, axis: number): any => {
+      if (!Array.isArray(input)) {
+        return input;
+      }
+
+      if (axis === dimIndex) {
+        return this._rolling1D(input as DataValue[], window, options, reducer);
+      }
+
+      return input.map(child => apply(child, axis + 1));
+    };
+
+    return apply(materialized, 0) as NDArray;
+  }
+
+  private _rolling1D(
+    values: DataValue[],
+    window: number,
+    options: RollingOptions,
+    reducer: 'mean' | 'sum'
+  ): DataValue[] {
+    const len = values.length;
+    const result: DataValue[] = new Array(len).fill(null);
+    const center = options.center ?? false;
+    const minPeriods = options.minPeriods ?? window;
+    const normalizedWindow = window <= 0 ? 1 : window;
+
+    for (let i = 0; i < len; i++) {
+      let start: number;
+      let end: number;
+
+      if (center) {
+        const half = Math.floor((normalizedWindow - 1) / 2);
+        start = i - half;
+        end = start + normalizedWindow - 1;
+      } else {
+        end = i;
+        start = end - normalizedWindow + 1;
+      }
+
+      start = Math.max(start, 0);
+      end = Math.min(end, len - 1);
+
+      if (end < start) {
+        continue;
+      }
+
+      const windowValues: number[] = [];
+
+      for (let j = start; j <= end; j++) {
+        const value = values[j];
+        if (typeof value === 'number' && !Number.isNaN(value)) {
+          windowValues.push(value);
+        }
+      }
+
+      if (windowValues.length < minPeriods || windowValues.length === 0) {
+        continue;
+      }
+
+      if (reducer === 'sum') {
+        const sum = windowValues.reduce((acc, val) => acc + val, 0);
+        result[i] = sum;
+      } else {
+        const sum = windowValues.reduce((acc, val) => acc + val, 0);
+        result[i] = sum / windowValues.length;
+      }
+    }
+
+    return result;
+  }
+
   /**
    * Select best dimension to chunk along for streaming
    */
@@ -1741,5 +1826,49 @@ export class DataArray {
   private _estimateSize(dataArray: DataArray): number {
     const bytesPerElement = 8; // Assume float64
     return dataArray.size * bytesPerElement;
+  }
+}
+
+class DataArrayRolling {
+  private readonly _dimIndex: number;
+  private readonly _options: RollingOptions;
+  private readonly _window: number;
+
+  constructor(
+    private readonly _source: DataArray,
+    private readonly _dim: DimensionName,
+    window: number,
+    options: RollingOptions
+  ) {
+    if (window <= 0 || !Number.isFinite(window)) {
+      throw new Error('rolling window must be a positive integer');
+    }
+    const dimIndex = _source.dims.indexOf(_dim);
+    if (dimIndex === -1) {
+      throw new Error(`Dimension '${_dim}' not found in DataArray`);
+    }
+
+    this._dimIndex = dimIndex;
+    this._window = Math.floor(window);
+    this._options = options;
+  }
+
+  mean(): DataArray {
+    return this._apply('mean');
+  }
+
+  sum(): DataArray {
+    return this._apply('sum');
+  }
+
+  private _apply(reducer: 'mean' | 'sum'): DataArray {
+    const data = this._source._applyRolling(this._dimIndex, this._window, this._options, reducer);
+
+    return new DataArray(data, {
+      dims: this._source.dims,
+      coords: this._source.coords,
+      attrs: this._source.attrs,
+      name: this._source.name
+    });
   }
 }

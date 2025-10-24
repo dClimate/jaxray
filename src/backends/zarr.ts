@@ -4,7 +4,7 @@ import { Dataset } from "../Dataset.js";
 import { DataArray } from "../DataArray.js";
 import { reshape } from "../utils.js";
 import { DataValue } from "../types.js";
-import { cfTimeToDate, isTimeCoordinate } from "../cf-time.js";
+import { cfTimeToDate, isTimeCoordinate } from "../time/cf-time.js";
 
 function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | undefined): any[] {
   const normalized = values.map((value) => {

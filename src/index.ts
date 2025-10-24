@@ -9,7 +9,7 @@ export { DataArray } from './DataArray.js';
 export { Dataset } from './Dataset.js';
 export * from './types.js';
 export * from './utils.js';
-export * from './cf-time.js';
+export * from './time/cf-time.js';
 export type { WhereOptions, BinaryOpOptions } from './ops/where.js';
 export {
   createEagerBlock,

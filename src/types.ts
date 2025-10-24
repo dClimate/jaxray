@@ -107,3 +107,8 @@ export interface StreamChunk<T> {
   chunkIndex: number;
   totalChunks: number;
 }
+
+export interface RollingOptions {
+  center?: boolean;
+  minPeriods?: number;
+}
