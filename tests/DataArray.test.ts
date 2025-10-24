@@ -320,7 +320,10 @@ describe('DataArray', () => {
       coords: { lon: [-190, 170, 200] }
     });
 
-    const adjustedValues = da.coords.lon.map(value => (((value + 180) % 360) + 360) % 360 - 180);
+    const adjustedValues = da.coords.lon.map(value => {
+      const num = Number(value);
+      return (((num + 180) % 360) + 360) % 360 - 180;
+    });
     const adjustedDA = new DataArray(adjustedValues, {
       dims: ['lon'],
       coords: { lon: da.coords.lon }

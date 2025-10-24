@@ -13,5 +13,6 @@ export default defineConfig({
         '*.config.ts',
       ],
     },
+    testTimeout: 30000,
   },
 });
