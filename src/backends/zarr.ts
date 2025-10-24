@@ -3,7 +3,7 @@ import * as zarr from "zarrita";
 import { Dataset } from "../Dataset.js";
 import { DataArray } from "../DataArray.js";
 import { reshape } from "../utils.js";
-import { DataValue } from "../types.js";
+import { DataValue, NDArray } from "../types.js";
 import { cfTimeToDate, isTimeCoordinate } from "../time/cf-time.js";
 
 function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | undefined): any[] {
@@ -272,7 +272,7 @@ export class ZarrBackend {
         // Handle scalar result (all dimensions were single indices)
         if (resultShape.length === 0) {
           const scalarValue = result.data !== undefined ? result.data : result;
-          return scalarValue;
+          return scalarValue as unknown as DataValue;
         }
 
         // Handle array result
