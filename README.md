@@ -304,6 +304,151 @@ const combined = weather.merge(humidityData);
 console.log(combined.dataVars); // ['temperature', 'pressure', 'humidity']
 ```
 
+### Conditional Selection with Where
+
+Use the `where()` method to filter data based on conditions. Create conditions using comparison methods like `.lt()`, `.gt()`, `.le()`, `.ge()`:
+
+```typescript
+const data = new DataArray([10, 20, 30, 40, 50], {
+  dims: ['time'],
+  coords: { time: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'] }
+});
+
+// Filter where values > 25 (keep values meeting condition, replace others with NaN)
+const condition = data.gt(25);
+const filtered = data.where(condition);
+console.log(filtered.data); // [NaN, NaN, 30, 40, 50]
+
+// Replace values not meeting condition with 0
+const replaced = data.where(condition, 0);
+console.log(replaced.data); // [0, 0, 30, 40, 50]
+
+// Works with datasets too
+const temp = weather.getVariable('temperature');
+const hot = temp.gt(15);
+const filtered_weather = weather.where(hot);
+// Both temperature and pressure filtered by the condition
+```
+
+Available comparison methods: `.lt()`, `.le()`, `.gt()`, `.ge()`, `.equal()`, `.notEqual()`
+
+### Rolling Windows
+
+Calculate rolling statistics over a dimension:
+
+```typescript
+const temps = new DataArray([10, 15, 20, 18, 22, 25, 23], {
+  dims: ['time'],
+  coords: { time: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] }
+});
+
+// Rolling mean with window size 3
+const rolling_mean = temps.rolling('time', 3).mean();
+console.log(rolling_mean.data);
+// [NaN, NaN, 15, 17.67, 20, 21.67, 23.33]
+
+// Rolling sum
+const rolling_sum = temps.rolling('time', 3).sum();
+console.log(rolling_sum.data);
+// [NaN, NaN, 45, 53, 60, 65, 70]
+
+// Works with datasets
+const rolling_weather = weather.rolling('lat', 2).mean();
+// Both temperature and pressure computed with rolling mean
+```
+
+### Renaming Variables
+
+Rename data variables in a dataset:
+
+```typescript
+const weather = new Dataset({
+  temperature: temp,
+  pressure: pressure
+});
+
+// Rename single variable
+const renamed = weather.rename({ temperature: 'temp' });
+console.log(renamed.dataVars); // ['temp', 'pressure']
+
+// Rename multiple variables
+const renamed_all = weather.rename({
+  temperature: 'temp',
+  pressure: 'pres'
+});
+console.log(renamed_all.dataVars); // ['temp', 'pres']
+```
+
+### Assigning Coordinates
+
+Update or add coordinates to a dataset:
+
+```typescript
+const weather = new Dataset({
+  temperature: temp,
+  pressure: pressure
+});
+
+// Update existing coordinates
+const updated = weather.assignCoords({
+  lat: [41.0, 41.5],  // New latitude values
+  lon: [-75.0, -74.5] // New longitude values
+});
+
+// Coordinates can also be DataArrays
+const new_lats = new DataArray([41.0, 41.5], {
+  dims: ['lat']
+});
+const updated2 = weather.assignCoords({ lat: new_lats });
+```
+
+### Dropping Variables
+
+Remove variables from a dataset:
+
+```typescript
+const weather = new Dataset({
+  temperature: temp,
+  pressure: pressure,
+  humidity: humidity
+});
+
+// Drop single variable
+const dropped = weather.dropVars('humidity');
+console.log(dropped.dataVars); // ['temperature', 'pressure']
+
+// Drop multiple variables
+const dropped_multiple = weather.dropVars(['humidity', 'pressure']);
+console.log(dropped_multiple.dataVars); // ['temperature']
+```
+
+### Squeezing Dimensions
+
+Remove dimensions of size 1:
+
+```typescript
+const data = new DataArray(
+  [[[1, 2, 3]]],
+  {
+    dims: ['x', 'y', 'z'],
+    coords: {
+      x: [0],      // size 1 - will be squeezed
+      y: [10],     // size 1 - will be squeezed
+      z: [100, 101, 102]
+    }
+  }
+);
+
+const squeezed = data.squeeze();
+console.log(squeezed.dims);   // ['z']
+console.log(squeezed.shape);  // [3]
+console.log(squeezed.data);   // [1, 2, 3]
+
+// Works with datasets too
+const squeezed_weather = weather.squeeze();
+// All dimensions of size 1 are removed from all variables
+```
+
 ## API Reference
 
 ### DataArray
@@ -345,6 +490,17 @@ new DataArray(data, options?)
   - `options.method`: Selection method
   - `options.tolerance`: Maximum distance for method selection
 - `isel(selection)`: Select by integer positions
+- `where(condition, other?, options?)`: Filter data based on a condition
+  - `condition`: Boolean DataArray (create with comparison methods like `.lt()`, `.gt()`, etc.)
+  - `other`: Optional replacement value where condition is false (default: NaN)
+  - `options.keepAttrs`: Preserve attributes in result (default: false)
+  - `options.skipNa`: Skip NaN values in condition (default: false)
+- `rolling(dim, window, options?)`: Create rolling window object
+  - Returns `DataArrayRolling` with `.mean()` and `.sum()` methods
+  - `window`: Size of rolling window
+  - `options.min_periods`: Minimum observations in window (default: window size)
+  - `options.center`: Center the window (default: false)
+- `squeeze()`: Remove dimensions of size 1
 - `sum(dim?)`: Sum along dimension (or all values)
 - `mean(dim?)`: Mean along dimension (or all values)
 - `toObject()`: Convert to plain JavaScript object
@@ -389,6 +545,23 @@ new Dataset(dataVars?, options?)
   - `options.tolerance`: Maximum distance for method selection
 - `isel(selection)`: Select by integer positions
 - `map(fn)`: Apply function to all variables
+- `where(condition, other?, options?)`: Filter data based on a condition
+  - `condition`: Boolean DataArray or Dataset (create with comparison methods like `.lt()`, `.gt()`, etc.)
+  - `other`: Optional replacement value where condition is false (default: NaN)
+  - `options.keepAttrs`: Preserve attributes in result (default: false)
+  - `options.skipNa`: Skip NaN values in condition (default: false)
+- `rolling(dim, window, options?)`: Create rolling window object
+  - Returns `DatasetRolling` with `.mean()` and `.sum()` methods
+  - `window`: Size of rolling window
+  - `options.min_periods`: Minimum observations in window (default: window size)
+  - `options.center`: Center the window (default: false)
+- `rename(mapping)`: Rename variables
+  - `mapping`: Object mapping old names to new names
+- `assignCoords(coords)`: Update or add coordinates
+  - `coords`: Object mapping dimension names to coordinate values or DataArrays
+- `dropVars(names)`: Remove variables
+  - `names`: String or array of variable names to drop
+- `squeeze()`: Remove dimensions of size 1
 - `merge(other)`: Merge with another Dataset
 - `toObject()`: Convert to plain JavaScript object
 - `toJSON()`: Convert to JSON string

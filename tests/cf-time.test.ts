@@ -9,7 +9,7 @@ import {
   formatDate,
   isTimeCoordinate,
   formatCoordinateValue
-} from '../src/cf-time';
+} from '../src/time/cf-time';
 
 describe('parseCFTimeUnits', () => {
   test('should parse seconds since format', () => {
