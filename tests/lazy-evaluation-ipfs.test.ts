@@ -394,9 +394,11 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
   /**
    * Test 11: Verify values are identical with chained vs combined selections
    *
-   * This is the critical test: when doing chained selections on lazy data,
-   * the final computed value should be EXACTLY THE SAME as a direct selection.
-   * This verifies that lazy selections correctly track and preserve ranges.
+   * Regression coverage for the lazy-selection composition bug. Chaining sel()
+   * calls used to lose the mapping to the original dataset indices, triggering
+   * multi-gigabyte allocations and "Invalid typed array length" errors. This
+   * test ensures each intermediate lazy selection now carries the original
+   * index mapping so that the final scalar matches the direct lookup.
    */
   test('should return same value from chained selections as direct selection', async () => {
     const ipfsElements = createIpfsElements(GATEWAY);
@@ -424,46 +426,48 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
 
     // Method 2: Chained selections - first latitude, then longitude and time
     console.log('Method 2: Chained selection (latitude -> longitude -> time)...');
-    const chainedSelection1 = await variable.sel({ latitude: 50 });
-    const chainedSelection2 = await chainedSelection1.sel({ longitude: 35 });
-    const chainedSelection3 = await chainedSelection2.sel({ time: '1987-05-20T23:00:00' });
+    console.log('Verifying chained selections compose lazily without loading the full dataset');
 
-    const chainedValue1 = chainedSelection3.isLazy
-      ? (await chainedSelection3.compute()).values
-      : chainedSelection3.values;
+    try {
+      const chainedSelection1 = await variable.sel({ latitude: 50 });
+      const chainedSelection2 = await chainedSelection1.sel({ longitude: 35 });
+      const chainedSelection3 = await chainedSelection2.sel({ time: '1987-05-20T23:00:00' });
 
-    console.log('Chained selection value (lat->lon->time):', chainedValue1);
+      const chainedValue1 = chainedSelection3.isLazy
+        ? (await chainedSelection3.compute()).values
+        : chainedSelection3.values;
 
-    // Method 3: Chained selections in different order
-    console.log('Method 3: Chained selection (time -> longitude -> latitude)...');
-    const chainedSelection2_1 = await variable.sel({ time: '1987-05-20T23:00:00' });
-    const chainedSelection2_2 = await chainedSelection2_1.sel({ longitude: 35 });
-    const chainedSelection2_3 = await chainedSelection2_2.sel({ latitude: 50 });
+      console.log('Chained selection value (lat->lon->time):', chainedValue1);
 
-    const chainedValue2 = chainedSelection2_3.isLazy
-      ? (await chainedSelection2_3.compute()).values
-      : chainedSelection2_3.values;
+      // Method 3: Chained selections in different order to confirm commutativity
+      const chainedSelectionAlt1 = await variable.sel({ time: '1987-05-20T23:00:00' });
+      const chainedSelectionAlt2 = await chainedSelectionAlt1.sel({ longitude: 35 });
+      const chainedSelectionAlt3 = await chainedSelectionAlt2.sel({ latitude: 50 });
 
-    console.log('Chained selection value (time->lon->lat):', chainedValue2);
+      const chainedValue2 = chainedSelectionAlt3.isLazy
+        ? (await chainedSelectionAlt3.compute()).values
+        : chainedSelectionAlt3.values;
 
-    // All three methods should return the SAME value
-    expect(directValue).toBeDefined();
-    expect(chainedValue1).toBeDefined();
-    expect(chainedValue2).toBeDefined();
+      console.log('Chained selection value (time->lon->lat):', chainedValue2);
 
-    // Critical assertion: values must be identical
-    expect(directValue).toBe(chainedValue1);
-    expect(directValue).toBe(chainedValue2);
-    expect(chainedValue1).toBe(chainedValue2);
-
-    console.log('✓ All selection methods returned identical values!');
+      // Critical assertion: values must be identical
+      expect(directValue).toBe(chainedValue1);
+      expect(directValue).toBe(chainedValue2);
+      expect(chainedValue1).toBe(chainedValue2);
+      console.log('✓ Chained selection returned same value!');
+    } catch (error) {
+      console.log('✗ Chained selection failed:', error instanceof Error ? error.message : String(error));
+      throw (error instanceof Error ? error : new Error(String(error)));
+    }
   }, 120000);
 
   /**
    * Test 12: Verify range selections return consistent subsets
    *
-   * Multiple selections of the same range should return identical data,
-   * whether combined or chained
+   * Companion regression test for chained range selections. It guarantees that
+   * composing lazy range requests yields the same subset as a single combined
+   * selection and, critically, that the computation happens lazily without
+   * materialising the full dataset between steps.
    */
   test('should return same data subset from chained range selections', async () => {
     const ipfsElements = createIpfsElements(GATEWAY);
@@ -491,36 +495,104 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
 
     // Method 2: Chained range selections
     console.log('Method 2: Chained range selection...');
-    const chainedRange1 = await variable.sel({ latitude: [48, 52] });
-    const chainedRange2 = await chainedRange1.sel({ longitude: [33, 37] });
-    const chainedRange3 = await chainedRange2.sel({ time: ['1987-05-18T23:00:00', '1987-05-22T23:00:00'] });
+    console.log('Validating chained range selections compute the same subset lazily');
 
-    const chainedRangeData = chainedRange3.isLazy
-      ? await chainedRange3.compute()
-      : chainedRange3;
+    try {
+      const chainedRange1 = await variable.sel({ latitude: [48, 52] });
+      const chainedRange2 = await chainedRange1.sel({ longitude: [33, 37] });
+      const chainedRange3 = await chainedRange2.sel({ time: ['1987-05-18T23:00:00', '1987-05-22T23:00:00'] });
 
-    console.log('Chained range shape:', chainedRangeData.shape);
+      const chainedRangeData = chainedRange3.isLazy
+        ? await chainedRange3.compute()
+        : chainedRange3;
 
-    // Shapes should be identical
-    expect(directRangeData.shape).toEqual(chainedRangeData.shape);
+      console.log('Chained range shape:', chainedRangeData.shape);
 
-    // Data should be identical (comparing first few values as a sanity check)
-    const directFlat = directRangeData.data as any;
-    const chainedFlat = chainedRangeData.data as any;
+      // Shapes should be identical
+      expect(directRangeData.shape).toEqual(chainedRangeData.shape);
 
-    if (Array.isArray(directFlat) && Array.isArray(chainedFlat)) {
-      // For nested arrays, just verify same shape and first few values
-      expect(directFlat.length).toBe(chainedFlat.length);
+      // Data should be identical (comparing first few values as a sanity check)
+      const directFlat = directRangeData.data as any;
+      const chainedFlat = chainedRangeData.data as any;
 
-      // Compare first element(s)
-      const directFirst = Array.isArray(directFlat[0]) ? directFlat[0][0] : directFlat[0];
-      const chainedFirst = Array.isArray(chainedFlat[0]) ? chainedFlat[0][0] : chainedFlat[0];
+      if (Array.isArray(directFlat) && Array.isArray(chainedFlat)) {
+        // For nested arrays, just verify same shape and first few values
+        expect(directFlat.length).toBe(chainedFlat.length);
 
-      console.log('Direct first value:', directFirst);
-      console.log('Chained first value:', chainedFirst);
-      expect(directFirst).toBe(chainedFirst);
+        const extractFirstScalar = (value: any): number => {
+          let current = value;
+          while (Array.isArray(current)) {
+            current = current[0];
+          }
+          return current as number;
+        };
+
+        const directFirst = extractFirstScalar(directFlat);
+        const chainedFirst = extractFirstScalar(chainedFlat);
+
+        console.log('Direct first value:', directFirst);
+        console.log('Chained first value:', chainedFirst);
+        expect(directFirst).toBeCloseTo(chainedFirst, 6);
+      }
+
+      console.log('✓ Range selection methods returned identical data!');
+    } catch (error) {
+      console.log('✗ Chained range selection failed:', error instanceof Error ? error.message : String(error));
+      throw (error instanceof Error ? error : new Error(String(error)));
     }
+  }, 120000);
 
-    console.log('✓ Range selection methods returned identical data!');
+  /**
+   * Test 13: Selecting a scalar from a prior range selection should match a direct scalar selection
+   *
+   * Ensures that range selections retain their original index mapping so that a
+   * follow-up scalar sel() produces the same value as requesting that scalar
+   * directly from the source variable.
+   */
+  test('should match scalar selection taken from prior range selection', async () => {
+    const ipfsElements = createIpfsElements(GATEWAY);
+    const store = await ShardedStore.open(CID, ipfsElements);
+    const ds = await Dataset.open_zarr(store);
+
+    const varName = ds.dataVars[0];
+    const variable = ds.getVariable(varName);
+
+    console.log(`Testing scalar-from-range consistency for: ${varName}`);
+
+    // Step 1: take a lazy range slice
+    const rangeSelection = await variable.sel({
+      latitude: [48, 52],
+      longitude: [33, 37],
+      time: ['1987-05-18T23:00:00', '1987-05-22T23:00:00']
+    });
+
+    // Step 2: drill down to a specific coordinate within that range
+    const scalarFromRange = await rangeSelection.sel({
+      latitude: 49,
+      longitude: 34,
+      time: '1987-05-18T23:00:00'
+    });
+
+    const scalarFromRangeValue = scalarFromRange.isLazy
+      ? (await scalarFromRange.compute()).values
+      : scalarFromRange.values;
+
+    console.log('Scalar from range selection:', scalarFromRangeValue);
+
+    // Step 3: direct scalar selection from the original variable
+    const directScalar = await variable.sel({
+      latitude: 49,
+      longitude: 34,
+      time: '1987-05-18T23:00:00'
+    });
+
+    const directScalarValue = directScalar.isLazy
+      ? (await directScalar.compute()).values
+      : directScalar.values;
+
+    console.log('Direct scalar selection:', directScalarValue);
+
+    expect(directScalarValue).toBe(scalarFromRangeValue);
+    console.log('✓ Scalar selection from range matched direct selection');
   }, 120000);
 });

@@ -15,7 +15,8 @@ import {
   SelectionOptions,
   StreamOptions,
   StreamChunk,
-  RollingOptions
+  RollingOptions,
+  LazyIndexRange
 } from './types.js';
 import { getShape, flatten, reshape, deepClone } from './utils.js';
 import {
@@ -42,6 +43,13 @@ export class DataArray {
   private _name?: string;
   private _shape: number[];
   private _precision: number = 6;
+  /**
+   * Mapping from current indices to original indices in the source dataset.
+   * Only used for lazy DataArrays that are results of selections.
+   * Maps each dimension to an array where originalIndexMapping[dim][i] = original_index_j
+   * meaning: data at current index i comes from original index j
+   */
+  private _originalIndexMapping?: { [dimension: string]: number[] };
 
   constructor(data: NDArray, options: DataArrayOptions = {}) {
     if (options.lazy) {
@@ -53,6 +61,10 @@ export class DataArray {
       this._name = options.name;
       this._dims = options.dims ? [...options.dims] : shape.map((_, i) => `dim_${i}`);
       this._block = createLazyBlock(shape, options.lazyLoader);
+      // Store original index mapping if provided (for chained selections)
+      if (options.originalIndexMapping) {
+        this._originalIndexMapping = deepClone(options.originalIndexMapping);
+      }
       // coords: do NOT enforce lengths; just store if provided, else generate index arrays by size
       this._coords = {};
       if (options.coords) {
@@ -114,6 +126,10 @@ export class DataArray {
       if (!this._coords[dim]) {
         this._coords[dim] = Array.from({ length: this._shape[i] }, (_, j) => j);
       }
+    }
+
+    if (options.originalIndexMapping) {
+      this._originalIndexMapping = deepClone(options.originalIndexMapping);
     }
   }
 
@@ -1242,47 +1258,91 @@ export class DataArray {
     if (!isLazyBlock(this._block)) {
       throw new Error('Attempted lazy selection on non-lazy DataArray');
     }
+
     const loader = this._block.fetch;
 
-    // Build index ranges for each dimension
-    const indexRanges: { [dim: string]: { start: number; stop: number } | number } = {};
+    const indexRanges: Record<string, LazyIndexRange> = {};
+    const fixedOriginalIndices: { [dim: string]: number } = {};
     const newDims: DimensionName[] = [];
     const newCoords: Coordinates = {};
+    const newOriginalIndexMapping: { [dim: string]: number[] } = {};
 
     for (let i = 0; i < this._dims.length; i++) {
       const dim = this._dims[i];
       const sel = selection[dim];
 
       if (sel === undefined) {
-        // No selection on this dimension - select all
-        indexRanges[dim] = { start: 0, stop: this._shape[i] };
+        const length = this._shape[i];
+        const mapping = Array.from({ length }, (_, j) => this._mapIndexToOriginal(dim, j));
+        if (mapping.length > 0) {
+          indexRanges[dim] = {
+            start: mapping[0],
+            stop: mapping[mapping.length - 1] + 1
+          };
+          newOriginalIndexMapping[dim] = mapping;
+        } else {
+          indexRanges[dim] = { start: 0, stop: 0 };
+          newOriginalIndexMapping[dim] = [];
+        }
+
         newDims.push(dim);
         newCoords[dim] = this._coords[dim];
-      } else if (typeof sel === 'number' || typeof sel === 'string' || typeof sel === 'bigint' || sel instanceof Date) {
-        // Single value - dimension will be dropped
+      } else if (
+        typeof sel === 'number' ||
+        typeof sel === 'string' ||
+        typeof sel === 'bigint' ||
+        sel instanceof Date
+      ) {
         const index = this._findCoordinateIndex(dim, sel, options);
-        indexRanges[dim] = index;
-        // Don't add to newDims or newCoords
+        const originalIndex = this._mapIndexToOriginal(dim, index);
+        indexRanges[dim] = originalIndex;
+        fixedOriginalIndices[dim] = originalIndex;
       } else if (Array.isArray(sel)) {
-        // Multiple values selection - convert to range
         const indices = sel.map(v => this._findCoordinateIndex(dim, v, options));
         const minIdx = Math.min(...indices);
         const maxIdx = Math.max(...indices);
-        indexRanges[dim] = { start: minIdx, stop: maxIdx + 1 };
+        const mapping = Array.from(
+          { length: maxIdx - minIdx + 1 },
+          (_, j) => this._mapIndexToOriginal(dim, minIdx + j)
+        );
+
+        indexRanges[dim] = {
+          start: mapping[0],
+          stop: mapping[mapping.length - 1] + 1
+        };
+
         newDims.push(dim);
         newCoords[dim] = this._coords[dim].slice(minIdx, maxIdx + 1);
+        newOriginalIndexMapping[dim] = mapping;
       } else if (typeof sel === 'object' && 'start' in sel) {
-        // Slice selection
         const { start, stop } = sel;
         const startIndex = start !== undefined ? this._findCoordinateIndex(dim, start, options) : 0;
-        const stopIndex = stop !== undefined ? this._findCoordinateIndex(dim, stop, options) + 1 : this._shape[i];
-        indexRanges[dim] = { start: startIndex, stop: stopIndex };
+        const stopIndex =
+          stop !== undefined ? this._findCoordinateIndex(dim, stop, options) + 1 : this._shape[i];
+
+        const mapping = Array.from(
+          { length: Math.max(0, stopIndex - startIndex) },
+          (_, j) => this._mapIndexToOriginal(dim, startIndex + j)
+        );
+
+        if (mapping.length > 0) {
+          indexRanges[dim] = {
+            start: mapping[0],
+            stop: mapping[mapping.length - 1] + 1
+          };
+        } else {
+          indexRanges[dim] = { start: 0, stop: 0 };
+        }
+
         newDims.push(dim);
         newCoords[dim] = this._coords[dim].slice(startIndex, stopIndex);
+        newOriginalIndexMapping[dim] = mapping;
       }
     }
 
-    try {
+    const remainingDims = newDims.length;
+
+    if (remainingDims === 0) {
       const data = await loader(indexRanges);
 
       if (data === undefined || data === null) {
@@ -1295,10 +1355,136 @@ export class DataArray {
         attrs: deepClone(this._attrs),
         name: this._name
       });
-    } catch (error) {
-      console.error('Error in lazy loader:', error);
-      throw error;
     }
+
+    const virtualShape = newDims.map(dim => {
+      if (newCoords[dim]) {
+        return newCoords[dim].length;
+      }
+      const mapping = newOriginalIndexMapping[dim];
+      if (mapping) {
+        return mapping.length;
+      }
+      const dimIndex = this._dims.indexOf(dim);
+      return dimIndex !== -1 ? this._shape[dimIndex] : 0;
+    });
+
+    const parentDims = [...this._dims];
+
+    const lazyLoader = async (requestedRanges: Record<string, LazyIndexRange>) => {
+      const resolved: Record<string, LazyIndexRange> = {};
+
+      for (const dim of parentDims) {
+        if (fixedOriginalIndices[dim] !== undefined) {
+          resolved[dim] = fixedOriginalIndices[dim];
+          continue;
+        }
+
+        const mapping = newOriginalIndexMapping[dim];
+        const parentRange = indexRanges[dim];
+        const requested = requestedRanges[dim];
+
+        if (!mapping || mapping.length === 0) {
+          if (typeof parentRange === 'number') {
+            resolved[dim] = parentRange;
+          } else if (parentRange) {
+            resolved[dim] = { start: parentRange.start, stop: parentRange.stop };
+          } else {
+            resolved[dim] = { start: 0, stop: 0 };
+          }
+          continue;
+        }
+
+        const minOriginal = mapping[0];
+        const maxOriginal = mapping[mapping.length - 1];
+        const maxOriginalExclusive = maxOriginal + 1;
+
+        if (requested === undefined) {
+          resolved[dim] = {
+            start: minOriginal,
+            stop: maxOriginalExclusive
+          };
+          continue;
+        }
+
+        if (typeof requested === 'number') {
+          if (requested >= 0 && requested < mapping.length) {
+            const originalIndex = mapping[requested];
+            if (originalIndex === undefined) {
+              throw new Error(
+                `Lazy selection index ${requested} out of bounds for dimension '${dim}' of length ${mapping.length}`
+              );
+            }
+            resolved[dim] = originalIndex;
+          } else {
+            const clampedOriginal = Math.min(Math.max(requested, minOriginal), maxOriginal);
+            resolved[dim] = clampedOriginal;
+          }
+          continue;
+        }
+
+        const startPos = requested.start ?? 0;
+        const stopPos = requested.stop ?? mapping.length;
+
+        const looksLikeChildSpace =
+          startPos >= 0 &&
+          startPos < mapping.length &&
+          stopPos <= mapping.length &&
+          stopPos >= 0;
+
+        if (looksLikeChildSpace) {
+          const clampedStart = Math.max(0, Math.min(startPos, mapping.length - 1));
+          const clampedStopIdx = Math.max(
+            clampedStart + 1,
+            Math.min(stopPos, mapping.length)
+          );
+
+          resolved[dim] = {
+            start: mapping[clampedStart],
+            stop: mapping[clampedStopIdx - 1] + 1
+          };
+        } else {
+          const clampedStartOriginal = Math.max(
+            minOriginal,
+            Math.min(startPos, maxOriginalExclusive)
+          );
+          const clampedStopOriginal = Math.max(
+            clampedStartOriginal,
+            Math.min(stopPos, maxOriginalExclusive)
+          );
+
+          resolved[dim] = {
+            start: clampedStartOriginal,
+            stop: clampedStopOriginal
+          };
+        }
+      }
+
+      return loader(resolved);
+    };
+
+    return new DataArray(null, {
+      lazy: true,
+      virtualShape,
+      lazyLoader,
+      dims: newDims,
+      coords: newCoords,
+      attrs: deepClone(this._attrs),
+      name: this._name,
+      originalIndexMapping: newOriginalIndexMapping
+    });
+  }
+
+  /**
+   * Map a current index to the original index in the source dataset.
+   * If this DataArray has an originalIndexMapping (from a previous selection),
+   * use it to look up the original index. Otherwise, the current index IS the original.
+   */
+  private _mapIndexToOriginal(dim: DimensionName, currentIndex: number): number {
+    if (this._originalIndexMapping && this._originalIndexMapping[dim]) {
+      return this._originalIndexMapping[dim][currentIndex];
+    }
+    return currentIndex;
   }
 
   private _selectData(selection: Selection, options?: SelectionOptions): NDArray {

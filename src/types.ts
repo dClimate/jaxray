@@ -47,6 +47,18 @@ export interface DataArrayOptions {
   lazy?: boolean;
   virtualShape?: number[];
   lazyLoader?: LazyLoader;
+  /**
+   * Mapping from current indices to original indices in the source dataset.
+   * Used to track chained lazy selections - when a lazy array is sliced,
+   * this maps each new index to the corresponding original index.
+   *
+   * Example: If originalIndexMapping = { latitude: [10, 11, 12, 13, 14] },
+   * then new index 0 refers to original index 10, index 1 refers to original 11, etc.
+   *
+   * When the lazy loader is called, indices are mapped through this before being
+   * passed to the loader, ensuring the loader always receives original indices.
+   */
+  originalIndexMapping?: { [dimension: string]: number[] };
 }
 
 /**
