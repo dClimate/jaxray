@@ -183,6 +183,30 @@ describe('Dataset', () => {
     );
   });
 
+  test('toString should describe lazy variables without materializing data', () => {
+    let loaderCalled = false;
+    const lazyArray = new DataArray(null, {
+      lazy: true,
+      virtualShape: [2],
+      lazyLoader: () => {
+        loaderCalled = true;
+        return [1, 2];
+      },
+      dims: ['time'],
+      coords: { time: [0, 1] },
+      attrs: { _zarr_data_type: 'float32' },
+      name: 'temperature'
+    });
+
+    const ds = new Dataset({ temperature: lazyArray });
+
+    const summary = ds.toString();
+
+    expect(loaderCalled).toBe(false);
+    expect(summary).toContain('temperature');
+    expect(summary).toContain('float32');
+  });
+
   test('dropVars should remove selected variables', () => {
     const temp = new DataArray([1, 2], { dims: ['x'], coords: { x: [0, 1] } });
     const humidity = new DataArray([50, 60], { dims: ['x'], coords: { x: [0, 1] } });

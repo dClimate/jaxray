@@ -946,8 +946,20 @@ export class Dataset {
 
   /**
    * Infer dtype from DataArray
-   */
+  */
   private _inferDtype(dataArray: DataArray): string {
+    const attrs = dataArray.attrs;
+    // Prefer stored dtype metadata so lazy arrays don't need to materialize data.
+    const attrDtype = (attrs._zarr_data_type ?? attrs.dtype) as string | undefined;
+
+    if (attrDtype) {
+      return attrDtype;
+    }
+
+    if (dataArray.isLazy) {
+      return 'object';
+    }
+
     const values = dataArray.values;
     if (!values) return 'object';
 
@@ -1121,4 +1133,3 @@ export class Dataset {
     return chunkSelection;
   }
 }
-

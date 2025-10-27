@@ -275,17 +275,11 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
     const originalAttrs = variable.attrs;
     const originalDims = variable.dims;
 
-    console.log(`Original dims: ${originalDims}`);
-    console.log(`Original attrs:`, originalAttrs);
-
     // Do a selection
     const selected = await variable.sel({
       latitude: 45,
       longitude: 34
     });
-
-    console.log(`Selected dims: ${selected.dims}`);
-    console.log(`Selected attrs:`, selected.attrs);
 
     // Dimensions might change (removed ones), but attrs should be preserved
     expect(selected.attrs).toEqual(originalAttrs);
