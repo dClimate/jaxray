@@ -127,7 +127,12 @@ export class KuboCAS extends ContentAddressedStore {
     if (initialDelay <= 0) throw new Error("initial_delay must be positive");
     if (backoffFactor < 1.0) throw new Error("backoff_factor must be >= 1.0");
 
-    this.fetchImpl = fetchImpl ?? (() => { throw new Error("fetch is not available"); }) as any;
+    const fallbackFetch = (globalThis as any)?.fetch;
+    const candidateFetch = fetchImpl ?? fallbackFetch;
+    if (typeof candidateFetch !== "function") {
+      throw new Error("fetch is not available");
+    }
+    this.fetchImpl = candidateFetch.bind(globalThis) as typeof fetch;
     this.hasher = hasher;
 
     let gateway = gatewayBaseUrl || KuboCAS.KUBO_DEFAULT_LOCAL_GATEWAY_BASE_URL;
