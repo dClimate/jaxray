@@ -81,7 +81,6 @@ export interface KuboCASOptions {
   maxRetries?: number;
   initialDelay?: number; // seconds
   backoffFactor?: number; // >= 1.0
-  fetchImpl?: typeof fetch; // custom fetch if desired
 }
 
 export class KuboCAS extends ContentAddressedStore {
@@ -98,7 +97,6 @@ export class KuboCAS extends ContentAddressedStore {
   private readonly maxRetries: number;
   private readonly initialDelay: number;
   private readonly backoffFactor: number;
-  private readonly fetchImpl: typeof fetch;
 
   constructor(opts: KuboCASOptions = {}) {
     super();
@@ -115,7 +113,6 @@ export class KuboCAS extends ContentAddressedStore {
       maxRetries = 3,
       initialDelay = 1.0,
       backoffFactor = 2.0,
-      fetchImpl = (globalThis as any).fetch,
     } = opts;
 
     // Validate chunker like Python
@@ -127,12 +124,6 @@ export class KuboCAS extends ContentAddressedStore {
     if (initialDelay <= 0) throw new Error("initial_delay must be positive");
     if (backoffFactor < 1.0) throw new Error("backoff_factor must be >= 1.0");
 
-    const fallbackFetch = (globalThis as any)?.fetch;
-    const candidateFetch = fetchImpl ?? fallbackFetch;
-    if (typeof candidateFetch !== "function") {
-      throw new Error("fetch is not available");
-    }
-    this.fetchImpl = candidateFetch.bind(globalThis) as typeof fetch;
     this.hasher = hasher;
 
     let gateway = gatewayBaseUrl || KuboCAS.KUBO_DEFAULT_LOCAL_GATEWAY_BASE_URL;
@@ -198,7 +189,7 @@ export class KuboCAS extends ContentAddressedStore {
         // Blob is widely supported; for Node 18+, global Blob exists
         form.append("file", new Blob([data]));
 
-        const res = await this.fetchImpl(this.rpcUrl, {
+        const res = await fetch(this.rpcUrl, {
           method: "POST",
           headers: this.buildHeaders(),
           body: form,
@@ -244,7 +235,7 @@ export class KuboCAS extends ContentAddressedStore {
 
     return this.sem.withPermit(async () => {
       return this.retrying(async () => {
-        const res = await this.fetchImpl(url, {
+        const res = await fetch(url, {
           method: "GET",
           headers: this.buildHeaders(headers),
         });
@@ -262,7 +253,7 @@ export class KuboCAS extends ContentAddressedStore {
   async pin_cid(cid: CID, targetRpc = KuboCAS.KUBO_DEFAULT_LOCAL_RPC_BASE_URL): Promise<void> {
     const url = `${targetRpc.replace(/\/+$/, "")}/api/v0/pin/add?recursive=true&arg=${encodeURIComponent(String(cid))}`;
     await this.sem.withPermit(async () => {
-      const res = await this.fetchImpl(url, { method: "POST", headers: this.buildHeaders() });
+      const res = await fetch(url, { method: "POST", headers: this.buildHeaders() });
       if (!res.ok) throw new Error(`pin/add failed: ${res.status} ${res.statusText}`);
     });
   }
@@ -270,7 +261,7 @@ export class KuboCAS extends ContentAddressedStore {
   async unpin_cid(cid: CID, targetRpc = KuboCAS.KUBO_DEFAULT_LOCAL_RPC_BASE_URL): Promise<void> {
     const url = `${targetRpc.replace(/\/+$/, "")}/api/v0/pin/rm?recursive=true&arg=${encodeURIComponent(String(cid))}`;
     await this.sem.withPermit(async () => {
-      const res = await this.fetchImpl(url, { method: "POST", headers: this.buildHeaders() });
+      const res = await fetch(url, { method: "POST", headers: this.buildHeaders() });
       if (!res.ok) throw new Error(`pin/rm failed: ${res.status} ${res.statusText}`);
     });
   }
@@ -281,7 +272,7 @@ export class KuboCAS extends ContentAddressedStore {
     params.append("arg", String(oldId));
     params.append("arg", String(newId));
     await this.sem.withPermit(async () => {
-      const res = await this.fetchImpl(`${url}?${params.toString()}`, {
+      const res = await fetch(`${url}?${params.toString()}`, {
         method: "POST",
         headers: this.buildHeaders(),
       });
@@ -292,7 +283,7 @@ export class KuboCAS extends ContentAddressedStore {
   async pin_ls(targetRpc = KuboCAS.KUBO_DEFAULT_LOCAL_RPC_BASE_URL): Promise<Array<Record<string, unknown>>> {
     const url = `${targetRpc.replace(/\/+$/, "")}/api/v0/pin/ls`;
     return this.sem.withPermit(async () => {
-      const res = await this.fetchImpl(url, { method: "POST", headers: this.buildHeaders() });
+      const res = await fetch(url, { method: "POST", headers: this.buildHeaders() });
       if (!res.ok) throw new Error(`pin/ls failed: ${res.status} ${res.statusText}`);
       const json = await res.json() as { Keys?: Record<string, { Type: string }> };
       // Kubo returns { Keys: { "<cid>": { Type: "recursive" } , ... } }
