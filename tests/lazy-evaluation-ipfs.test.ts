@@ -35,9 +35,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
     const varName = ds.dataVars[0];
     const variable = ds.getVariable(varName);
 
-    console.log(`Testing variable: ${varName}`);
-    console.log(`Shape: ${variable.shape}, Dims: ${variable.dims}`);
-
     // Verify the original data is lazy
     expect(variable.isLazy).toBe(true);
 
@@ -48,7 +45,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       time: '1987-05-03T23:00:00'
     });
 
-    console.log('After first selection - should still be lazy if scalar result, or lazy if subset');
     expect(selection1).toBeDefined();
 
     // Second selection on different ranges
@@ -58,7 +54,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       time: '1987-05-04T23:00:00'
     });
 
-    console.log('After second selection - independent of first');
     expect(selection2).toBeDefined();
 
     // Both should be independent - computing them should give different results
@@ -98,9 +93,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       time: '1987-05-03T23:00:00'
     });
 
-    console.log('Chained selection result:', chained);
-    console.log('Combined selection result:', combined);
-
     // Both should produce valid results
     expect(chained).toBeDefined();
     expect(combined).toBeDefined();
@@ -128,7 +120,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
 
     // Get original shape
     const originalShape = variable.shape;
-    console.log(`Original shape: ${originalShape}`);
 
     // Select a range
     const rangeSelected = await variable.sel({
@@ -136,8 +127,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       longitude: [33, 35],
       time: ['1987-05-03T23:00:00', '1987-05-05T23:00:00']
     });
-
-    console.log(`Shape after range selection: ${rangeSelected.shape}`);
 
     // The result should be smaller than original
     if (!rangeSelected.isLazy) {
@@ -147,7 +136,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       const someDimensionSmaller = resultShape.some((size, idx) => size < originalShape[idx]);
       expect(someDimensionSmaller).toBe(true);
     } else {
-      console.log('Range selected data is lazy - will compute...');
       const computed = await rangeSelected.compute();
       const resultShape = computed.shape;
       // At least one dimension should be smaller
@@ -189,7 +177,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
 
     // Verify dataset has variables
     expect(ds.dataVars.length).toBeGreaterThan(0);
-    console.log(`Dataset has ${ds.dataVars.length} variables`);
 
     // Check which variables are lazy
     let lazyVars = 0;
@@ -198,7 +185,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
         lazyVars++;
       }
     }
-    console.log(`${lazyVars} variables are lazy`);
 
     // Select on the dataset
     const selected = await ds.sel({
@@ -244,14 +230,10 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       time: '1987-05-20T23:00:00'
     });
 
-    console.log('Created 3 independent selections');
-
     // Now compute them (order shouldn't matter for independent lazy arrays)
     const computedA = selection_A.isLazy ? await selection_A.compute() : selection_A;
     const computedC = selection_C.isLazy ? await selection_C.compute() : selection_C;
     const computedB = selection_B.isLazy ? await selection_B.compute() : selection_B;
-
-    console.log('Computed all three selections');
 
     // All should have values
     expect(computedA.values).toBeDefined();
@@ -301,8 +283,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       longitude: [33, 35]
     });
 
-    console.log('Dataset selected, checking if variables are lazy...');
-
     // Check which are lazy before compute
     const beforeLazy = new Set<string>();
     for (const varName of selected.dataVars) {
@@ -310,12 +290,10 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
         beforeLazy.add(varName);
       }
     }
-    console.log(`${beforeLazy.size} variables are lazy before compute`);
 
     // If any variables are lazy, compute the dataset
     if (beforeLazy.size > 0) {
       const computed = await selected.compute();
-      console.log('Dataset computed');
 
       // Verify all are now eager
       for (const varName of computed.dataVars) {
@@ -344,8 +322,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       time: 0
     });
 
-    console.log('isel completed, result:', selected.values || 'lazy');
-
     expect(selected).toBeDefined();
   }, 30000);
 
@@ -361,10 +337,7 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
 
     const varName = ds.dataVars[0];
     const variable = ds.getVariable(varName);
-
-    console.log(`Full data shape: ${variable.shape}`);
-    console.log(`Full data size: ${variable.shape.reduce((a, b) => a * b, 1)} elements`);
-
+  
     // Do a small selection
     const smallSelection = await variable.sel({
       latitude: 45,
@@ -372,15 +345,11 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       time: '1987-05-03T23:00:00'
     });
 
-    console.log('Small selection completed - if lazy, no data was loaded');
-
     if (smallSelection.isLazy) {
       // For lazy data, getting values should fail without compute
       expect(() => smallSelection.values).toThrow();
-      console.log('Confirmed: lazy selection does not load data until compute()');
     } else {
       // For scalar result, value is materialized
-      console.log('Result is eager (likely a scalar value)');
       expect(smallSelection.values).toBeDefined();
     }
   }, 60000);
@@ -402,10 +371,7 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
     const varName = ds.dataVars[0];
     const variable = ds.getVariable(varName);
 
-    console.log(`Testing value consistency for: ${varName}`);
-
     // Method 1: Direct selection with all coordinates at once
-    console.log('Method 1: Direct selection...');
     const directSelection = await variable.sel({
       latitude: 50,
       longitude: 35,
@@ -416,12 +382,7 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       ? (await directSelection.compute()).values
       : directSelection.values;
 
-    console.log('Direct selection value:', directValue);
-
     // Method 2: Chained selections - first latitude, then longitude and time
-    console.log('Method 2: Chained selection (latitude -> longitude -> time)...');
-    console.log('Verifying chained selections compose lazily without loading the full dataset');
-
     try {
       const chainedSelection1 = await variable.sel({ latitude: 50 });
       const chainedSelection2 = await chainedSelection1.sel({ longitude: 35 });
@@ -430,8 +391,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       const chainedValue1 = chainedSelection3.isLazy
         ? (await chainedSelection3.compute()).values
         : chainedSelection3.values;
-
-      console.log('Chained selection value (lat->lon->time):', chainedValue1);
 
       // Method 3: Chained selections in different order to confirm commutativity
       const chainedSelectionAlt1 = await variable.sel({ time: '1987-05-20T23:00:00' });
@@ -442,15 +401,11 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
         ? (await chainedSelectionAlt3.compute()).values
         : chainedSelectionAlt3.values;
 
-      console.log('Chained selection value (time->lon->lat):', chainedValue2);
-
       // Critical assertion: values must be identical
       expect(directValue).toBe(chainedValue1);
       expect(directValue).toBe(chainedValue2);
       expect(chainedValue1).toBe(chainedValue2);
-      console.log('✓ Chained selection returned same value!');
     } catch (error) {
-      console.log('✗ Chained selection failed:', error instanceof Error ? error.message : String(error));
       throw (error instanceof Error ? error : new Error(String(error)));
     }
   }, 120000);
@@ -471,10 +426,7 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
     const varName = ds.dataVars[0];
     const variable = ds.getVariable(varName);
 
-    console.log(`Testing subset consistency for: ${varName}`);
-
     // Method 1: Direct range selection
-    console.log('Method 1: Direct range selection...');
     const directRange = await variable.sel({
       latitude: [48, 52],
       longitude: [33, 37],
@@ -485,12 +437,7 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       ? await directRange.compute()
       : directRange;
 
-    console.log('Direct range shape:', directRangeData.shape);
-
     // Method 2: Chained range selections
-    console.log('Method 2: Chained range selection...');
-    console.log('Validating chained range selections compute the same subset lazily');
-
     try {
       const chainedRange1 = await variable.sel({ latitude: [48, 52] });
       const chainedRange2 = await chainedRange1.sel({ longitude: [33, 37] });
@@ -499,8 +446,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       const chainedRangeData = chainedRange3.isLazy
         ? await chainedRange3.compute()
         : chainedRange3;
-
-      console.log('Chained range shape:', chainedRangeData.shape);
 
       // Shapes should be identical
       expect(directRangeData.shape).toEqual(chainedRangeData.shape);
@@ -524,14 +469,9 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
         const directFirst = extractFirstScalar(directFlat);
         const chainedFirst = extractFirstScalar(chainedFlat);
 
-        console.log('Direct first value:', directFirst);
-        console.log('Chained first value:', chainedFirst);
         expect(directFirst).toBeCloseTo(chainedFirst, 6);
       }
-
-      console.log('✓ Range selection methods returned identical data!');
     } catch (error) {
-      console.log('✗ Chained range selection failed:', error instanceof Error ? error.message : String(error));
       throw (error instanceof Error ? error : new Error(String(error)));
     }
   }, 120000);
@@ -551,8 +491,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
     const varName = ds.dataVars[0];
     const variable = ds.getVariable(varName);
 
-    console.log(`Testing scalar-from-range consistency for: ${varName}`);
-
     // Step 1: take a lazy range slice
     const rangeSelection = await variable.sel({
       latitude: [48, 52],
@@ -571,8 +509,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       ? (await scalarFromRange.compute()).values
       : scalarFromRange.values;
 
-    console.log('Scalar from range selection:', scalarFromRangeValue);
-
     // Step 3: direct scalar selection from the original variable
     const directScalar = await variable.sel({
       latitude: 49,
@@ -584,9 +520,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
       ? (await directScalar.compute()).values
       : directScalar.values;
 
-    console.log('Direct scalar selection:', directScalarValue);
-
     expect(directScalarValue).toBe(scalarFromRangeValue);
-    console.log('✓ Scalar selection from range matched direct selection');
   }, 120000);
 });

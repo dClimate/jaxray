@@ -217,8 +217,6 @@ describe('Dataset Concatenation with IPFS Data', () => {
       expect(combinedValues[2]).toBe(nonFinalizedValues[0]);
       expect(combinedValues[3]).toBe(nonFinalizedValues[1]);
 
-    } else {
-      console.log('Values structure:', { combined: combinedValues, finalized: finalizedValues, nonFinalized: nonFinalizedValues });
     }
   }, 300000);
 });
