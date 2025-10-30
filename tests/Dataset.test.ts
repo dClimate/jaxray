@@ -720,4 +720,320 @@ describe('Dataset', () => {
       expect(ds.isEncrypted).toBe(false);
     });
   });
+
+  describe('concat', () => {
+    test('should concatenate two datasets along time dimension', async () => {
+      // Create first dataset (older data: 2020-2022)
+      const temp1 = new DataArray(
+        [[1, 2], [3, 4], [5, 6]],
+        {
+          dims: ['time', 'x'],
+          coords: {
+            time: ['2020', '2021', '2022'],
+            x: [10, 20]
+          }
+        }
+      );
+      const ds1 = new Dataset({ temperature: temp1 });
+
+      // Create second dataset (newer data: 2023-2024)
+      const temp2 = new DataArray(
+        [[7, 8], [9, 10]],
+        {
+          dims: ['time', 'x'],
+          coords: {
+            time: ['2023', '2024'],
+            x: [10, 20]
+          }
+        }
+      );
+      const ds2 = new Dataset({ temperature: temp2 });
+
+      // Concatenate
+      const combined = ds1.concat(ds2, { dim: 'time' });
+
+      // Verify dimensions
+      expect(combined.dims).toContain('time');
+      expect(combined.dims).toContain('x');
+      expect(combined.sizes.time).toBe(5);
+      expect(combined.sizes.x).toBe(2);
+
+      // Verify coordinates
+      const coords = combined.coords;
+      expect(coords.time).toEqual(['2020', '2021', '2022', '2023', '2024']);
+      expect(coords.x).toEqual([10, 20]);
+
+      // Verify the concatenated dataset is lazy
+      const tempVar = combined.getVariable('temperature');
+      expect(tempVar.isLazy).toBe(true);
+    });
+
+    test('should fetch data from first dataset only', async () => {
+      // Create first dataset
+      const temp1 = new DataArray(
+        [[1, 2], [3, 4], [5, 6]],
+        {
+          dims: ['time', 'x'],
+          coords: {
+            time: ['2020', '2021', '2022'],
+            x: [10, 20]
+          }
+        }
+      );
+      const ds1 = new Dataset({ temperature: temp1 });
+
+      // Create second dataset
+      const temp2 = new DataArray(
+        [[7, 8], [9, 10]],
+        {
+          dims: ['time', 'x'],
+          coords: {
+            time: ['2023', '2024'],
+            x: [10, 20]
+          }
+        }
+      );
+      const ds2 = new Dataset({ temperature: temp2 });
+
+      // Concatenate and query first dataset only
+      const combined = ds1.concat(ds2, { dim: 'time' });
+      const selected = await combined.sel({ time: ['2020', '2021'] });
+      const computed = await selected.compute();
+      const tempData = computed.getVariable('temperature').data;
+
+      expect(tempData).toEqual([[1, 2], [3, 4]]);
+    });
+
+    test('should fetch data from second dataset only', async () => {
+      // Create first dataset
+      const temp1 = new DataArray(
+        [[1, 2], [3, 4], [5, 6]],
+        {
+          dims: ['time', 'x'],
+          coords: {
+            time: ['2020', '2021', '2022'],
+            x: [10, 20]
+          }
+        }
+      );
+      const ds1 = new Dataset({ temperature: temp1 });
+
+      // Create second dataset
+      const temp2 = new DataArray(
+        [[7, 8], [9, 10]],
+        {
+          dims: ['time', 'x'],
+          coords: {
+            time: ['2023', '2024'],
+            x: [10, 20]
+          }
+        }
+      );
+      const ds2 = new Dataset({ temperature: temp2 });
+
+      // Concatenate and query second dataset only
+      const combined = ds1.concat(ds2, { dim: 'time' });
+      const selected = await combined.sel({ time: ['2023', '2024'] });
+      const computed = await selected.compute();
+      const tempData = computed.getVariable('temperature').data;
+
+      expect(tempData).toEqual([[7, 8], [9, 10]]);
+    });
+
+    test('should fetch data spanning both datasets', async () => {
+      // Create first dataset
+      const temp1 = new DataArray(
+        [[1, 2], [3, 4], [5, 6]],
+        {
+          dims: ['time', 'x'],
+          coords: {
+            time: ['2020', '2021', '2022'],
+            x: [10, 20]
+          }
+        }
+      );
+      const ds1 = new Dataset({ temperature: temp1 });
+
+      // Create second dataset
+      const temp2 = new DataArray(
+        [[7, 8], [9, 10]],
+        {
+          dims: ['time', 'x'],
+          coords: {
+            time: ['2023', '2024'],
+            x: [10, 20]
+          }
+        }
+      );
+      const ds2 = new Dataset({ temperature: temp2 });
+
+      // Concatenate and query across both datasets
+      const combined = ds1.concat(ds2, { dim: 'time' });
+      const selected = await combined.sel({ time: ['2021', '2022', '2023', '2024'] });
+      const computed = await selected.compute();
+      const tempData = computed.getVariable('temperature').data;
+
+      expect(tempData).toEqual([[3, 4], [5, 6], [7, 8], [9, 10]]);
+    });
+
+    test('should handle multiple variables', async () => {
+      // Create first dataset with multiple variables
+      const temp1 = new DataArray(
+        [[1, 2], [3, 4]],
+        {
+          dims: ['time', 'x'],
+          coords: { time: ['2020', '2021'], x: [10, 20] }
+        }
+      );
+      const pressure1 = new DataArray(
+        [[100, 200], [300, 400]],
+        {
+          dims: ['time', 'x'],
+          coords: { time: ['2020', '2021'], x: [10, 20] }
+        }
+      );
+      const ds1 = new Dataset({ temperature: temp1, pressure: pressure1 });
+
+      // Create second dataset
+      const temp2 = new DataArray(
+        [[5, 6]],
+        {
+          dims: ['time', 'x'],
+          coords: { time: ['2022'], x: [10, 20] }
+        }
+      );
+      const pressure2 = new DataArray(
+        [[500, 600]],
+        {
+          dims: ['time', 'x'],
+          coords: { time: ['2022'], x: [10, 20] }
+        }
+      );
+      const ds2 = new Dataset({ temperature: temp2, pressure: pressure2 });
+
+      // Concatenate
+      const combined = ds1.concat(ds2, { dim: 'time' });
+
+      // Verify both variables exist
+      expect(combined.hasVariable('temperature')).toBe(true);
+      expect(combined.hasVariable('pressure')).toBe(true);
+
+      // Fetch and verify data
+      const result = await combined.compute();
+      const tempData = result.getVariable('temperature').data;
+      const pressureData = result.getVariable('pressure').data;
+
+      expect(tempData).toEqual([[1, 2], [3, 4], [5, 6]]);
+      expect(pressureData).toEqual([[100, 200], [300, 400], [500, 600]]);
+    });
+
+    test('should throw error if dimension not found in first dataset', () => {
+      const temp1 = new DataArray([1, 2, 3], {
+        dims: ['x'],
+        coords: { x: [10, 20, 30] }
+      });
+      const ds1 = new Dataset({ temperature: temp1 });
+
+      const temp2 = new DataArray([4, 5], {
+        dims: ['x'],
+        coords: { x: [40, 50] }
+      });
+      const ds2 = new Dataset({ temperature: temp2 });
+
+      expect(() => ds1.concat(ds2, { dim: 'time' })).toThrow("Dimension 'time' not found in first dataset");
+    });
+
+    test('should throw error if variables do not match', () => {
+      const temp1 = new DataArray([1, 2], {
+        dims: ['time'],
+        coords: { time: ['2020', '2021'] }
+      });
+      const ds1 = new Dataset({ temperature: temp1 });
+
+      const pressure2 = new DataArray([3, 4], {
+        dims: ['time'],
+        coords: { time: ['2022', '2023'] }
+      });
+      const ds2 = new Dataset({ pressure: pressure2 });
+
+      expect(() => ds1.concat(ds2, { dim: 'time' })).toThrow(
+        "Variable 'temperature' exists in first dataset but not in second dataset"
+      );
+    });
+
+    test('should throw error if non-concat dimensions have different sizes', () => {
+      const temp1 = new DataArray(
+        [[1, 2, 3], [4, 5, 6]],
+        {
+          dims: ['time', 'x'],
+          coords: { time: ['2020', '2021'], x: [10, 20, 30] }
+        }
+      );
+      const ds1 = new Dataset({ temperature: temp1 });
+
+      const temp2 = new DataArray(
+        [[7, 8]],
+        {
+          dims: ['time', 'x'],
+          coords: { time: ['2022'], x: [10, 20] }
+        }
+      );
+      const ds2 = new Dataset({ temperature: temp2 });
+
+      expect(() => ds1.concat(ds2, { dim: 'time' })).toThrow(
+        "Dimension 'x' has different sizes: 3 vs 2"
+      );
+    });
+
+    test('should work with lazy datasets from zarr stores', async () => {
+      // This test simulates lazy datasets
+      const lazyLoader1 = async (ranges: any) => {
+        // Simulate fetching from first store
+        const timeRange = ranges.time;
+        if (typeof timeRange === 'object') {
+          const count = timeRange.stop - timeRange.start;
+          return Array.from({ length: count }, (_, i) => [i + 1, i + 2]);
+        }
+        return [[1, 2]];
+      };
+
+      const lazyLoader2 = async (ranges: any) => {
+        // Simulate fetching from second store
+        const timeRange = ranges.time;
+        if (typeof timeRange === 'object') {
+          const count = timeRange.stop - timeRange.start;
+          return Array.from({ length: count }, (_, i) => [i + 10, i + 20]);
+        }
+        return [[10, 20]];
+      };
+
+      const temp1 = new DataArray(null, {
+        lazy: true,
+        virtualShape: [3, 2],
+        lazyLoader: lazyLoader1,
+        dims: ['time', 'x'],
+        coords: { time: ['2020', '2021', '2022'], x: [10, 20] }
+      });
+      const ds1 = new Dataset({ temperature: temp1 });
+
+      const temp2 = new DataArray(null, {
+        lazy: true,
+        virtualShape: [2, 2],
+        lazyLoader: lazyLoader2,
+        dims: ['time', 'x'],
+        coords: { time: ['2023', '2024'], x: [10, 20] }
+      });
+      const ds2 = new Dataset({ temperature: temp2 });
+
+      // Concatenate lazy datasets
+      const combined = ds1.concat(ds2, { dim: 'time' });
+
+      // Verify it's still lazy
+      const tempVar = combined.getVariable('temperature');
+      expect(tempVar.isLazy).toBe(true);
+
+      // Verify shape
+      expect(tempVar.shape).toEqual([5, 2]);
+    });
+  });
 });

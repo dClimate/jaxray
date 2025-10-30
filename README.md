@@ -304,6 +304,65 @@ const combined = weather.merge(humidityData);
 console.log(combined.dataVars); // ['temperature', 'pressure', 'humidity']
 ```
 
+### Concatenating Datasets
+
+Concatenate datasets along a dimension to combine time-series data from multiple sources. This is particularly useful for joining finalized and non-finalized data, or combining historical and recent observations:
+
+```typescript
+// Create first dataset (historical data)
+const historical = new Dataset({
+  temperature: new DataArray(
+    [[15.2, 16.8], [18.3, 19.1], [20.5, 21.2]],
+    {
+      dims: ['time', 'location'],
+      coords: {
+        time: ['2020', '2021', '2022'],
+        location: ['Station-A', 'Station-B']
+      }
+    }
+  )
+});
+
+// Create second dataset (recent data)
+const recent = new Dataset({
+  temperature: new DataArray(
+    [[22.1, 23.4], [24.2, 25.1]],
+    {
+      dims: ['time', 'location'],
+      coords: {
+        time: ['2023', '2024'],
+        location: ['Station-A', 'Station-B']
+      }
+    }
+  )
+});
+
+// Concatenate along time dimension
+const combined = historical.concat(recent, { dim: 'time' });
+
+console.log(combined.sizes.time); // 5
+console.log(combined.coords.time); // ['2020', '2021', '2022', '2023', '2024']
+
+// Query across both datasets
+const data = await combined.sel({ time: ['2021', '2022', '2023'] });
+const computed = await data.compute();
+console.log(computed.getVariable('temperature').data);
+// [[18.3, 19.1], [20.5, 21.2], [22.1, 23.4]]
+```
+
+**Key Features:**
+- 🔗 **Lazy Evaluation**: The result is a lazy dataset that only fetches data when needed
+- 🎯 **Smart Routing**: Automatically queries the correct source dataset(s) based on selection
+- 📊 **Multi-Variable**: Works with datasets containing multiple variables
+- ✅ **Validation**: Ensures dimensions and variables match across datasets
+
+**Use Cases:**
+- Combining finalized and provisional weather data
+- Joining historical archives with recent observations
+- Merging data from different time periods or sources
+
+See the [concat-datasets example](examples/concat-datasets.ts) for more details.
+
 ### Conditional Selection with Where
 
 Use the `where()` method to filter data based on conditions. Create conditions using comparison methods like `.lt()`, `.gt()`, `.le()`, `.ge()`:

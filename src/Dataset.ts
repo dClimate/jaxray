@@ -15,7 +15,9 @@ import {
   SelectionOptions,
   StreamOptions,
   StreamChunk,
-  RollingOptions
+  RollingOptions,
+  LazyIndexRange,
+  NDArray
 } from './types.js';
 import { deepClone, getBytesPerElement, ZARR_ENCODINGS } from './utils.js';
 import { formatCoordinateValue, isTimeCoordinate } from './time/cf-time.js';
@@ -712,6 +714,151 @@ export class Dataset {
   }
 
   /**
+   * Concatenate datasets along a dimension
+   * Similar to xarray.concat() in Python
+   *
+   * All dimensions except the concatenation dimension must have matching lengths and names.
+   * The result is a lazy dataset that intelligently routes queries to the appropriate source dataset.
+   *
+   * @param other - The dataset to concatenate with this one
+   * @param options - Options object with dim (required) and fillValue (optional)
+   * @returns A new lazy Dataset that combines both datasets
+   *
+   * @example
+   * ```typescript
+   * // Concatenate finalized and non-finalized weather data along time dimension
+   * const finalized = await Dataset.open_zarr(finalizedStore);
+   * const nonFinalized = await Dataset.open_zarr(nonFinalizedStore);
+   *
+   * const combined = finalized.concat(nonFinalized, { dim: 'time' });
+   *
+   * // Query data - automatically fetches from correct dataset(s)
+   * const data = await combined.sel({
+   *   time: { start: '2024-01-01', stop: '2025-09-01' },
+   *   lat: 45,
+   *   lon: -73
+   * });
+   * ```
+   */
+  concat(other: Dataset, options: { dim: DimensionName; fillValue?: DataValue }): Dataset {
+    const { dim, fillValue } = options;
+
+    // Validate that both datasets have the concatenation dimension
+    if (!this.dims.includes(dim)) {
+      throw new Error(`Dimension '${dim}' not found in first dataset`);
+    }
+    if (!other.dims.includes(dim)) {
+      throw new Error(`Dimension '${dim}' not found in second dataset`);
+    }
+
+    // Validate that both datasets have the same variables
+    const thisVars = new Set(this.dataVars);
+    const otherVars = new Set(other.dataVars);
+
+    for (const varName of thisVars) {
+      if (!otherVars.has(varName)) {
+        throw new Error(
+          `Variable '${varName}' exists in first dataset but not in second dataset. ` +
+          `All variables must be present in both datasets for concatenation.`
+        );
+      }
+    }
+
+    for (const varName of otherVars) {
+      if (!thisVars.has(varName)) {
+        throw new Error(
+          `Variable '${varName}' exists in second dataset but not in first dataset. ` +
+          `All variables must be present in both datasets for concatenation.`
+        );
+      }
+    }
+
+    // Validate that non-concatenation dimensions match
+    const thisSizes = this.sizes;
+    const otherSizes = other.sizes;
+
+    for (const dimension of this.dims) {
+      if (dimension === dim) continue; // Skip concatenation dimension
+
+      if (!other.dims.includes(dimension)) {
+        throw new Error(
+          `Dimension '${dimension}' exists in first dataset but not in second dataset. ` +
+          `All dimensions except '${dim}' must match.`
+        );
+      }
+
+      if (thisSizes[dimension] !== otherSizes[dimension]) {
+        throw new Error(
+          `Dimension '${dimension}' has different sizes: ${thisSizes[dimension]} vs ${otherSizes[dimension]}. ` +
+          `All dimensions except '${dim}' must have matching sizes.`
+        );
+      }
+    }
+
+    for (const dimension of other.dims) {
+      if (dimension === dim) continue;
+
+      if (!this.dims.includes(dimension)) {
+        throw new Error(
+          `Dimension '${dimension}' exists in second dataset but not in first dataset. ` +
+          `All dimensions except '${dim}' must match.`
+        );
+      }
+    }
+
+    // Get coordinates for concatenation dimension
+    const thisCoords = this._coords[dim];
+    const otherCoords = other._coords[dim];
+
+    if (!thisCoords || !otherCoords) {
+      throw new Error(`Coordinates for dimension '${dim}' not found in one or both datasets`);
+    }
+
+    // Combine coordinates along concatenation dimension
+    // Note: coordinates may overlap, but we preserve both ranges
+    const combinedCoords = [...thisCoords, ...otherCoords];
+
+    // Create mapping from coordinate values to dataset indices
+    const thisCoordSet = new Set(thisCoords.map(c => String(c)));
+    const otherCoordSet = new Set(otherCoords.map(c => String(c)));
+
+    // Build new coordinates object (use first dataset's coords as base)
+    const newCoords: Coordinates = { ...this._coords };
+    newCoords[dim] = combinedCoords;
+
+    // Create concatenated data variables
+    const newDataVars: { [name: string]: DataArray } = {};
+
+    for (const varName of this.dataVars) {
+      const thisVar = this.getVariable(varName);
+      const otherVar = other.getVariable(varName);
+
+      // Concatenate the DataArrays along the dimension
+      const concatenatedVar = this._concatDataArrays(
+        thisVar,
+        otherVar,
+        dim,
+        thisCoords,
+        otherCoords,
+        combinedCoords,
+        fillValue ? { fillValue } : undefined
+      );
+
+      newDataVars[varName] = concatenatedVar;
+    }
+
+    // Merge attributes (prefer first dataset's attributes)
+    const newAttrs: Attributes = { ...this._attrs };
+    const newCoordAttrs = { ...this._coordAttrs, ...other._coordAttrs };
+
+    return new Dataset(newDataVars, {
+      coords: newCoords,
+      attrs: newAttrs,
+      coordAttrs: newCoordAttrs
+    });
+  }
+
+  /**
    * Detect if any data variables use encryption codecs
    * Checks the codecs in the attributes of each data variable
    * @returns true if encryption is detected, false otherwise
@@ -1131,5 +1278,214 @@ export class Dataset {
     }
 
     return chunkSelection;
+  }
+
+  /**
+   * Concatenate two DataArrays along a dimension, creating a lazy DataArray
+   * that intelligently routes queries to the appropriate source.
+   */
+  private _concatDataArrays(
+    first: DataArray,
+    second: DataArray,
+    dim: DimensionName,
+    firstCoords: CoordinateValue[],
+    secondCoords: CoordinateValue[],
+    combinedCoords: CoordinateValue[],
+    options?: { fillValue?: DataValue }
+  ): DataArray {
+    // Validate dimensions match (except for the concat dimension)
+    if (first.dims.length !== second.dims.length) {
+      throw new Error(
+        `Cannot concatenate DataArrays with different number of dimensions: ${first.dims.length} vs ${second.dims.length}`
+      );
+    }
+
+    for (let i = 0; i < first.dims.length; i++) {
+      const firstDim = first.dims[i];
+      const secondDim = second.dims[i];
+
+      if (firstDim !== secondDim) {
+        throw new Error(
+          `Dimension mismatch at position ${i}: '${firstDim}' vs '${secondDim}'`
+        );
+      }
+
+      if (firstDim !== dim && first.shape[i] !== second.shape[i]) {
+        throw new Error(
+          `Shape mismatch for dimension '${firstDim}': ${first.shape[i]} vs ${second.shape[i]}`
+        );
+      }
+    }
+
+    // Get the dimension index
+    const dimIndex = first.dims.indexOf(dim);
+    if (dimIndex === -1) {
+      throw new Error(`Dimension '${dim}' not found in DataArray`);
+    }
+
+    // Calculate the new shape
+    const newShape = [...first.shape];
+    newShape[dimIndex] = combinedCoords.length;
+
+    // Build new coordinates
+    const newCoords: Coordinates = { ...first.coords };
+    newCoords[dim] = combinedCoords;
+
+    // Create a lazy loader that routes to the correct DataArray
+    const firstSize = firstCoords.length;
+    const secondOffset = firstSize;
+
+    const lazyLoader = async (ranges: { [dimension: string]: LazyIndexRange }): Promise<NDArray> => {
+      const requestedRange = ranges[dim];
+
+      // Determine which indices are requested
+      let startIdx: number;
+      let stopIdx: number;
+
+      if (typeof requestedRange === 'number') {
+        startIdx = requestedRange;
+        stopIdx = requestedRange + 1;
+      } else if (requestedRange && typeof requestedRange === 'object') {
+        startIdx = requestedRange.start;
+        stopIdx = requestedRange.stop;
+      } else {
+        startIdx = 0;
+        stopIdx = combinedCoords.length;
+      }
+
+      // Determine which dataset(s) to query
+      const firstEnd = firstSize;
+      const secondStart = firstSize;
+
+      const needsFirst = startIdx < firstEnd;
+      const needsSecond = stopIdx > secondStart;
+
+      if (needsFirst && !needsSecond) {
+        // Only query first dataset
+        const firstRanges = { ...ranges };
+        if (typeof requestedRange === 'number') {
+          firstRanges[dim] = requestedRange;
+        } else {
+          firstRanges[dim] = { start: startIdx, stop: Math.min(stopIdx, firstEnd) };
+        }
+        return await this._fetchFromDataArray(first, firstRanges);
+      } else if (needsSecond && !needsFirst) {
+        // Only query second dataset
+        const secondRanges = { ...ranges };
+        const offsetStart = startIdx - secondOffset;
+        const offsetStop = stopIdx - secondOffset;
+
+        if (typeof requestedRange === 'number') {
+          secondRanges[dim] = offsetStart;
+        } else {
+          secondRanges[dim] = { start: Math.max(0, offsetStart), stop: offsetStop };
+        }
+        return await this._fetchFromDataArray(second, secondRanges);
+      } else if (needsFirst && needsSecond) {
+        // Query both datasets and concatenate results
+        const firstRanges = { ...ranges };
+        firstRanges[dim] = { start: startIdx, stop: firstEnd };
+        const firstData = await this._fetchFromDataArray(first, firstRanges);
+
+        const secondRanges = { ...ranges };
+        secondRanges[dim] = { start: 0, stop: stopIdx - secondOffset };
+        const secondData = await this._fetchFromDataArray(second, secondRanges);
+
+        // Concatenate along the dimension
+        return this._concatenateArrays(firstData, secondData, dimIndex);
+      } else {
+        // Empty selection
+        throw new Error('Invalid range for concatenated dataset');
+      }
+    };
+
+    return new DataArray(null, {
+      lazy: true,
+      virtualShape: newShape,
+      lazyLoader,
+      dims: first.dims,
+      coords: newCoords,
+      attrs: deepClone(first.attrs),
+      name: first.name
+    });
+  }
+
+  /**
+   * Fetch data from a DataArray (handles both lazy and eager arrays)
+   */
+  private async _fetchFromDataArray(
+    dataArray: DataArray,
+    ranges: { [dimension: string]: LazyIndexRange }
+  ): Promise<NDArray> {
+    if (dataArray.isLazy) {
+      // Use the DataArray's internal lazy block to fetch
+      const block = (dataArray as any)._block;
+      if (block && typeof block.fetch === 'function') {
+        return await block.fetch(ranges);
+      }
+    }
+
+    // For eager arrays, we need to slice the data manually
+    // Convert ranges to selection format
+    const selection: Selection = {};
+    for (const [dimName, range] of Object.entries(ranges)) {
+      if (typeof range === 'number') {
+        // Single index selection
+        const coords = dataArray.coords[dimName];
+        if (coords && coords[range] !== undefined) {
+          selection[dimName] = coords[range];
+        } else {
+          selection[dimName] = range;
+        }
+      } else {
+        // Range selection
+        const coords = dataArray.coords[dimName];
+        if (coords) {
+          const start = coords[range.start];
+          const stop = coords[Math.min(range.stop - 1, coords.length - 1)];
+          if (start !== undefined && stop !== undefined) {
+            selection[dimName] = { start, stop };
+          }
+        }
+      }
+    }
+
+    const result = await dataArray.sel(selection);
+    return result.data;
+  }
+
+  /**
+   * Concatenate two arrays along a specific dimension
+   */
+  private _concatenateArrays(arr1: NDArray, arr2: NDArray, dimIndex: number): NDArray {
+    // Handle scalar case
+    if (!Array.isArray(arr1)) {
+      if (!Array.isArray(arr2)) {
+        return [arr1, arr2] as NDArray;
+      }
+      throw new Error('Cannot concatenate scalar with array');
+    }
+    if (!Array.isArray(arr2)) {
+      throw new Error('Cannot concatenate array with scalar');
+    }
+
+    // Concatenate along the specified dimension
+    if (dimIndex === 0) {
+      // Concatenate at the outermost level
+      return ([...arr1, ...arr2] as NDArray);
+    } else {
+      // Recursively concatenate at deeper levels
+      if (arr1.length !== arr2.length) {
+        throw new Error(
+          `Cannot concatenate arrays with different lengths at dimension 0: ${arr1.length} vs ${arr2.length}`
+        );
+      }
+
+      const result: any[] = [];
+      for (let i = 0; i < arr1.length; i++) {
+        result.push(this._concatenateArrays(arr1[i] as NDArray, arr2[i] as NDArray, dimIndex - 1));
+      }
+      return result as NDArray;
+    }
   }
 }
