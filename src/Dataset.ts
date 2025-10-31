@@ -38,6 +38,7 @@ export class Dataset {
   private _coordAttrs: { [coordName: string]: Attributes };
   private _precision: number = 6;
   private _isEncrypted: boolean = false;
+  private _coordsFrozen: boolean = false;
 
   constructor(
     dataVars: { [name: string]: DataArray } = {},
@@ -60,6 +61,20 @@ export class Dataset {
     for (const [name, dataArray] of Object.entries(dataVars)) {
       this.addVariable(name, dataArray);
     }
+
+    // Don't freeze here - freeze lazily on first getter access
+  }
+
+  /**
+   * Freeze coordinates to make them immutable (lazy - only called on first getter access)
+   */
+  private _freezeCoords(): void {
+    if (this._coordsFrozen) return;
+    Object.freeze(this._coords);
+    for (const key in this._coords) {
+      Object.freeze(this._coords[key]);
+    }
+    this._coordsFrozen = true;
   }
 
   /**
@@ -85,12 +100,16 @@ export class Dataset {
   }
 
   /**
-   * Get the coordinates
+   * Get the coordinates (frozen/immutable - safe to return direct reference)
    */
   get coords(): Coordinates {
-    return deepClone(this._coords);
+    this._freezeCoords();
+    return this._coords;
   }
 
+  /**
+   * Get the coordinate attributes
+   */
   get coordAttrs(): { [coordName: string]: Attributes } {
     return deepClone(this._coordAttrs);
   }
@@ -580,8 +599,15 @@ export class Dataset {
 
     for (const [name, dataArray] of this._dataVars.entries()) {
       let needsUpdate = false;
-      const coordsForArray = dataArray.coords;
+      // Create a new coords object instead of getting reference to frozen coords
+      const coordsForArray: Coordinates = {};
 
+      // Copy existing coords
+      for (const dim of dataArray.dims) {
+        coordsForArray[dim] = [...dataArray.coords[dim]];
+      }
+
+      // Update with new coords
       for (const dim of dimsToUpdate) {
         if (dataArray.dims.includes(dim)) {
           coordsForArray[dim] = updatedCoords[dim].map(value =>
@@ -963,7 +989,6 @@ export class Dataset {
    */
   calculateCoordinateResolutions(): { [dim: string]: any } {
     const resolutions: { [dim: string]: any } = {};
-
     for (const dim of this.dims) {
       const coords = this._coords[dim];
 
@@ -974,7 +999,6 @@ export class Dataset {
       // Check if this is a time coordinate
       const dimAttrs = this._coordAttrs[dim] || {};
       const isTime = isTimeCoordinate(dimAttrs);
-
       if (isTime) {
         // Use the DataArray's calculateTimeResolution method
         // Find a variable that has this time dimension
@@ -1033,7 +1057,6 @@ export class Dataset {
         }
       }
     }
-
     return resolutions;
   }
 

@@ -43,6 +43,7 @@ export class DataArray {
   private _name?: string;
   private _shape: number[];
   private _precision: number = 6;
+  private _coordsFrozen: boolean = false;
   /**
    * Mapping from current indices to original indices in the source dataset.
    * Only used for lazy DataArrays that are results of selections.
@@ -79,6 +80,7 @@ export class DataArray {
         const d = this._dims[i];
         if (!this._coords[d]) this._coords[d] = Array.from({ length: this._shape[i] }, (_, j) => j);
       }
+      // Don't freeze here - freeze lazily on first getter access
       return;
     }
 
@@ -131,6 +133,20 @@ export class DataArray {
     if (options.originalIndexMapping) {
       this._originalIndexMapping = deepClone(options.originalIndexMapping);
     }
+
+    // Don't freeze here - freeze lazily on first getter access
+  }
+
+  /**
+   * Freeze coordinates to make them immutable (lazy - only called on first getter access)
+   */
+  private _freezeCoords(): void {
+    if (this._coordsFrozen) return;
+    Object.freeze(this._coords);
+    for (const key in this._coords) {
+      Object.freeze(this._coords[key]);
+    }
+    this._coordsFrozen = true;
   }
 
   /**
@@ -162,10 +178,11 @@ export class DataArray {
   }
 
   /**
-   * Get the coordinates
+   * Get the coordinates (frozen/immutable - safe to return direct reference)
    */
   get coords(): Coordinates {
-    return deepClone(this._coords);
+    this._freezeCoords();
+    return this._coords;
   }
 
   /**
@@ -1012,8 +1029,17 @@ export class DataArray {
       return undefined;
     }
 
-    const first = timeCoords[0];
-    const second = timeCoords[1];
+    let first = timeCoords[0];
+    let second = timeCoords[1];
+
+    // Convert date strings to seconds for calculation
+    if (typeof first === 'object') {
+      first = first.getTime() / 1000;
+    }
+
+    if (typeof second === 'object') {
+      second = second.getTime() / 1000;
+    }
 
     if (typeof first !== 'number' || typeof second !== 'number') {
       return undefined;
