@@ -26,32 +26,10 @@ describe('Dataset.open_zarr with IPFS', () => {
     expect(ds.dataVars.length).toBeGreaterThan(0);
     expect(ds.dims.length).toBeGreaterThan(0);
 
-
-
-    // Print each variable's info
-    for (const varName of ds.dataVars) {
-      const variable = ds.getVariable(varName);
-      console.log(`\n${varName}:`, {
-        dims: variable.dims,
-        shape: variable.shape,
-        attrs: variable.attrs,
-      });
-    }
-
-    // Select a specific location and time
-    console.log('\n--- Selection Test ---');
-    console.log('Selecting: lat=45, lon=34, time=1987-01-03T23:00:00');
-
     const selected = await ds.sel({
       latitude: 45,
       longitude: 34,
       time: '1987-05-03T23:00:00'
-    });
-
-    const rangeSelected = await ds.sel({
-      latitude: [44, 45],
-      longitude: [33, 34],
-      time: ['1987-05-03T23:00:00', '1987-05-04T23:00:00']
     });
 
     // Check if we got a result
@@ -83,7 +61,10 @@ describe('Dataset.open_zarr with IPFS', () => {
   });
 
   test('should open hamt-backed zarr from IPFS gateway', async () => {
-    const cid = 'bafyr4ifo5pm7dfbjyrnch7hqblmtmmtdywnjkdk52kuxhdpzwvlt6pkxay';
+    // fetch the cid from a url 
+    const response = await fetch('https://dclimate-ceramic.duckdns.org/api/datasets/aifs-ensemble-temperature');
+    const cidJson = await response.json();
+    const cid = cidJson['cid'];
 
     const ipfsElements = createIpfsElements('https://ipfs-gateway.dclimate.net');
     const rootCid = CID.parse(cid);

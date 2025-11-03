@@ -60,7 +60,6 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
     // (unless by coincidence they're the same, but the point is they're independent)
     const value1 = selection1.isLazy ? await selection1.compute() : selection1;
     const value2 = selection2.isLazy ? await selection2.compute() : selection2;
-
     expect(value1).toBeDefined();
     expect(value2).toBeDefined();
     // Values should be different since we selected different coordinates

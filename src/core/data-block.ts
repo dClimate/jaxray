@@ -28,7 +28,7 @@ export interface LazyDataBlock extends BaseDataBlock {
 export type DataBlock = EagerDataBlock | LazyDataBlock;
 
 export function createEagerBlock(data: NDArray): EagerDataBlock {
-  const payload = deepClone(data);
+  const payload = data;
   const shape = getShape(payload);
 
   return {

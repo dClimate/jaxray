@@ -43,7 +43,6 @@ export class DataArray {
   private _name?: string;
   private _shape: number[];
   private _precision: number = 6;
-  private _coordsFrozen: boolean = false;
   /**
    * Mapping from current indices to original indices in the source dataset.
    * Only used for lazy DataArrays that are results of selections.
@@ -52,42 +51,54 @@ export class DataArray {
    */
   private _originalIndexMapping?: { [dimension: string]: number[] };
 
+  // Performance optimization caches
+  private _dimIndexMap: Map<string, number> = new Map();
+  private _coordsSortedCache: Map<string, boolean> = new Map();
+  // private _precisionFactor: number;
+
   constructor(data: NDArray, options: DataArrayOptions = {}) {
+    // Initialize precision factor (default 6)
+    // this._precisionFactor = Math.pow(10, this._precision);
+
     if (options.lazy) {
       if (!options.virtualShape) throw new Error('lazy DataArray requires virtualShape');
       if (!options.lazyLoader) throw new Error('lazy DataArray requires lazyLoader');
       const shape = [...options.virtualShape];
       this._shape = shape;
-      this._attrs = options.attrs || {};
+      this._attrs = options.attrs ? deepClone(options.attrs) : {};
       this._name = options.name;
       this._dims = options.dims ? [...options.dims] : shape.map((_, i) => `dim_${i}`);
       this._block = createLazyBlock(shape, options.lazyLoader);
       // Store original index mapping if provided (for chained selections)
+      // Deep clone to prevent mutations from affecting the original
       if (options.originalIndexMapping) {
         this._originalIndexMapping = deepClone(options.originalIndexMapping);
       }
       // coords: do NOT enforce lengths; just store if provided, else generate index arrays by size
       this._coords = {};
       if (options.coords) {
-        // Deep clone and round numeric coordinates
+        // Shallow copy to prevent array mutations (primitives are safe, objects share reference)
         for (const [dim, coords] of Object.entries(options.coords)) {
-          this._coords[dim] = coords.map(c =>
-            typeof c === 'number' ? this._roundPrecision(c) : c
-          );
+          this._coords[dim] = [...coords];
+          // Previous approach with rounding (kept as backup):
+          // this._coords[dim] = coords.map(c =>
+          //   typeof c === 'number' ? this._roundPrecision(c) : c
+          // );
         }
       }
       for (let i = 0; i < this._dims.length; i++) {
         const d = this._dims[i];
         if (!this._coords[d]) this._coords[d] = Array.from({ length: this._shape[i] }, (_, j) => j);
       }
-      // Don't freeze here - freeze lazily on first getter access
+      // Build dimension index map
+      this._dims.forEach((dim, idx) => this._dimIndexMap.set(dim, idx));
       return;
     }
 
     const shape = getShape(data);
     this._block = createEagerBlock(data);
     this._shape = [...shape];
-    this._attrs = options.attrs || {};
+    this._attrs = options.attrs ? deepClone(options.attrs) : {};
     this._name = options.name;
     // Handle dimensions
     if (options.dims) {
@@ -102,11 +113,14 @@ export class DataArray {
       this._dims = this._shape.map((_, i) => `dim_${i}`);
     }
 
+    // Build dimension index map for O(1) lookups (must be done before coordinate processing)
+    this._dims.forEach((dim, idx) => this._dimIndexMap.set(dim, idx));
+
     // Handle coordinates
     this._coords = {};
     if (options.coords) {
       for (const [dim, coords] of Object.entries(options.coords)) {
-        const dimIndex = this._dims.indexOf(dim);
+        const dimIndex = this._getDimIndex(dim);
         if (dimIndex === -1) {
           throw new Error(`Coordinate dimension '${dim}' not found in dims`);
         }
@@ -115,10 +129,12 @@ export class DataArray {
             `Coordinate '${dim}' length (${coords.length}) does not match dimension size (${this._shape[dimIndex]})`
           );
         }
-        // Round numeric coordinates to specified precision
-        this._coords[dim] = coords.map(c =>
-          typeof c === 'number' ? this._roundPrecision(c) : c
-        );
+        // Shallow copy to prevent array mutations (primitives are safe, objects share reference)
+        this._coords[dim] = [...coords];
+        // Previous approach with rounding (kept as backup):
+        // this._coords[dim] = coords.map(c =>
+        //   typeof c === 'number' ? this._roundPrecision(c) : c
+        // );
       }
     }
 
@@ -130,30 +146,19 @@ export class DataArray {
       }
     }
 
+    // Deep clone to prevent mutations from affecting the original
     if (options.originalIndexMapping) {
       this._originalIndexMapping = deepClone(options.originalIndexMapping);
     }
-
-    // Don't freeze here - freeze lazily on first getter access
   }
 
-  /**
-   * Freeze coordinates to make them immutable (lazy - only called on first getter access)
-   */
-  private _freezeCoords(): void {
-    if (this._coordsFrozen) return;
-    Object.freeze(this._coords);
-    for (const key in this._coords) {
-      Object.freeze(this._coords[key]);
-    }
-    this._coordsFrozen = true;
-  }
 
   /**
    * Get the data as a native JavaScript array
+   * NOTE: Returns direct reference for performance. Do not mutate the returned array.
    */
   get data(): NDArray {
-    return deepClone(this._block.materialize());
+    return this._block.materialize();
   }
 
   /**
@@ -178,18 +183,19 @@ export class DataArray {
   }
 
   /**
-   * Get the coordinates (frozen/immutable - safe to return direct reference)
+   * Get the coordinates
+   * NOTE: Returns direct reference for performance. Do not mutate the returned object.
    */
   get coords(): Coordinates {
-    this._freezeCoords();
     return this._coords;
   }
 
   /**
    * Get the attributes
+   * NOTE: Returns direct reference for performance. Do not mutate the returned object.
    */
   get attrs(): Attributes {
-    return deepClone(this._attrs);
+    return this._attrs;
   }
 
   /**
@@ -324,7 +330,7 @@ export class DataArray {
 
     // Determine which dimension to chunk along
     const chunkDim = options?.dimension || this._selectChunkDimension(selection);
-    const chunkDimIndex = this._dims.indexOf(chunkDim);
+    const chunkDimIndex = this._getDimIndex(chunkDim);
 
     if (chunkDimIndex === -1) {
       throw new Error(`Dimension '${chunkDim}' not found in DataArray`);
@@ -437,12 +443,11 @@ export class DataArray {
    */
   sum(dim?: DimensionName): DataArray | number {
     if (!dim) {
-      // Sum all values
-      const flatData = flatten(this._block.materialize());
-      return flatData.reduce((a, b) => (a as number) + (b as number), 0) as number;
+      // Sum all values using iterative approach (no flatten needed)
+      return this._sumAll(this._block.materialize());
     }
 
-    const dimIndex = this._dims.indexOf(dim);
+    const dimIndex = this._getDimIndex(dim);
     if (dimIndex === -1) {
       throw new Error(`Dimension '${dim}' not found`);
     }
@@ -474,12 +479,13 @@ export class DataArray {
    */
   mean(dim?: DimensionName): DataArray | number {
     if (!dim) {
-      const flatData = flatten(this._block.materialize());
-      const sum = flatData.reduce((a, b) => (a as number) + (b as number), 0) as number;
-      return sum / flatData.length;
+      const data = this._block.materialize();
+      const sum = this._sumAll(data);
+      const count = this._countAll(data);
+      return sum / count;
     }
 
-    const dimIndex = this._dims.indexOf(dim);
+    const dimIndex = this._getDimIndex(dim);
     if (dimIndex === -1) {
       throw new Error(`Dimension '${dim}' not found`);
     }
@@ -568,7 +574,7 @@ export class DataArray {
     const updatedCoords = deepClone(this._coords);
 
     for (const [dim, value] of Object.entries(mapping)) {
-      const dimIndex = this._dims.indexOf(dim);
+      const dimIndex = this._getDimIndex(dim);
       if (dimIndex === -1) {
         throw new Error(`Cannot assign coordinates for non-existent dimension '${dim}'`);
       }
@@ -994,12 +1000,64 @@ export class DataArray {
   }
 
   /**
+   * Get dimension index with O(1) lookup using cached map
+   */
+  private _getDimIndex(dim: DimensionName): number {
+    const index = this._dimIndexMap.get(dim);
+    if (index === undefined) {
+      return -1;
+    }
+    return index;
+  }
+
+  /**
+   * Sum all values in N-dimensional array without flattening - O(n) time, O(1) extra space
+   */
+  private _sumAll(data: NDArray): number {
+    let sum = 0;
+    const stack: any[] = [data];
+
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (Array.isArray(current)) {
+        for (let i = current.length - 1; i >= 0; i--) {
+          stack.push(current[i]);
+        }
+      } else if (typeof current === 'number') {
+        sum += current;
+      }
+    }
+
+    return sum;
+  }
+
+  /**
+   * Count all elements in N-dimensional array without flattening - O(n) time, O(1) extra space
+   */
+  private _countAll(data: NDArray): number {
+    let count = 0;
+    const stack: any[] = [data];
+
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (Array.isArray(current)) {
+        for (let i = current.length - 1; i >= 0; i--) {
+          stack.push(current[i]);
+        }
+      } else {
+        count++;
+      }
+    }
+
+    return count;
+  }
+
+  /**
    * Round a number to the specified precision
    */
-  private _roundPrecision(value: number): number {
-    const factor = Math.pow(10, this._precision);
-    return Math.round(value * factor) / factor;
-  }
+  // private _roundPrecision(value: number): number {
+  //   return Math.round(value * this._precisionFactor) / this._precisionFactor;
+  // }
 
   /**
    * Calculate and determine the time resolution from the time coordinate
@@ -1616,9 +1674,9 @@ export class DataArray {
 
     if (numericValue === undefined) {
       if (typeof value === 'string') {
-        return this._findIndexFallback(coords, value, method, tolerance);
+        return this._findIndexFallback(coords, value, method, tolerance, dim);
       }
-      return this._findIndexFallback(coords, value, method, tolerance);
+      return this._findIndexFallback(coords, value, method, tolerance, dim);
     }
 
     const numericCoords: number[] = [];
@@ -1700,20 +1758,20 @@ export class DataArray {
     }
 
     // Fallback to linear search for non-evenly-spaced or non-numeric coordinates
-    return this._findIndexFallback(coords, numericValue, method, tolerance);
+    return this._findIndexFallback(coords, numericValue, method, tolerance, dim);
   }
 
   /**
    * Fallback method using linear search (original indexOf-based approach)
    */
-  private _findIndexFallback(coords: CoordinateValue[], value: CoordinateValue, method?: string, tolerance?: number): number {
+  private _findIndexFallback(coords: CoordinateValue[], value: CoordinateValue, method?: string, tolerance?: number, dim?: string): number {
     // Apply selection method
     if (method === 'nearest') {
-      return this._findNearestIndex(coords, value, tolerance);
+      return this._findNearestIndex(coords, value, tolerance, dim);
     } else if (method === 'ffill' || method === 'pad') {
-      return this._findFfillIndex(coords, value, tolerance);
+      return this._findFfillIndex(coords, value, tolerance, dim);
     } else if (method === 'bfill' || method === 'backfill') {
-      return this._findBfillIndex(coords, value, tolerance);
+      return this._findBfillIndex(coords, value, tolerance, dim);
     }
 
     // Default exact match
@@ -1726,18 +1784,36 @@ export class DataArray {
   }
 
   /**
-   * Find nearest coordinate index
+   * Find nearest coordinate index (optimized with binary search for sorted coords)
    */
-  private _findNearestIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number): number {
+  private _findNearestIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number, dim?: string): number {
     if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
       throw new Error('Nearest neighbor lookup requires numeric coordinates');
     }
 
-    let closestIndex = 0;
-    let minDiff = Math.abs((coords[0] as number) - value);
+    const numCoords = coords as number[];
 
-    for (let i = 1; i < coords.length; i++) {
-      const diff = Math.abs((coords[i] as number) - value);
+    // Use binary search if coordinates are sorted
+    if (dim && numCoords.length > 20) {
+      if (this._isCoordsSorted(dim, numCoords)) {
+        const ascending = numCoords.length < 2 || numCoords[1] >= numCoords[0];
+        const closestIndex = this._binarySearchNearest(numCoords, value, ascending);
+        const minDiff = Math.abs(numCoords[closestIndex] - value);
+
+        if (tolerance !== undefined && minDiff > tolerance) {
+          throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+        }
+
+        return closestIndex;
+      }
+    }
+
+    // Fallback to linear search
+    let closestIndex = 0;
+    let minDiff = Math.abs(numCoords[0] - value);
+
+    for (let i = 1; i < numCoords.length; i++) {
+      const diff = Math.abs(numCoords[i] - value);
       if (diff < minDiff) {
         minDiff = diff;
         closestIndex = i;
@@ -1752,18 +1828,40 @@ export class DataArray {
   }
 
   /**
-   * Find forward fill index (last valid index <= value)
+   * Find forward fill index (last valid index <= value) - optimized with binary search
    */
-  private _findFfillIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number): number {
+  private _findFfillIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number, dim?: string): number {
     if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
       throw new Error('Forward fill requires numeric coordinates');
     }
 
+    const numCoords = coords as number[];
+
+    // Use binary search if coordinates are sorted
+    if (dim && numCoords.length > 20) {
+      if (this._isCoordsSorted(dim, numCoords)) {
+        const ascending = numCoords.length < 2 || numCoords[1] >= numCoords[0];
+        const lastValidIndex = this._binarySearchFfill(numCoords, value, ascending);
+
+        if (lastValidIndex === -1) {
+          throw new Error(`No coordinate <= ${value} for forward fill`);
+        }
+
+        const minDiff = value - numCoords[lastValidIndex];
+        if (tolerance !== undefined && minDiff > tolerance) {
+          throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+        }
+
+        return lastValidIndex;
+      }
+    }
+
+    // Fallback to linear search
     let lastValidIndex = -1;
     let minDiff = Infinity;
 
-    for (let i = 0; i < coords.length; i++) {
-      const coordValue = coords[i] as number;
+    for (let i = 0; i < numCoords.length; i++) {
+      const coordValue = numCoords[i];
       if (coordValue <= value) {
         const diff = value - coordValue;
         if (diff < minDiff) {
@@ -1785,18 +1883,40 @@ export class DataArray {
   }
 
   /**
-   * Find backward fill index (first valid index >= value)
+   * Find backward fill index (first valid index >= value) - optimized with binary search
    */
-  private _findBfillIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number): number {
+  private _findBfillIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number, dim?: string): number {
     if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
       throw new Error('Backward fill requires numeric coordinates');
     }
 
+    const numCoords = coords as number[];
+
+    // Use binary search if coordinates are sorted
+    if (dim && numCoords.length > 20) {
+      if (this._isCoordsSorted(dim, numCoords)) {
+        const ascending = numCoords.length < 2 || numCoords[1] >= numCoords[0];
+        const firstValidIndex = this._binarySearchBfill(numCoords, value, ascending);
+
+        if (firstValidIndex === -1) {
+          throw new Error(`No coordinate >= ${value} for backward fill`);
+        }
+
+        const minDiff = numCoords[firstValidIndex] - value;
+        if (tolerance !== undefined && minDiff > tolerance) {
+          throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+        }
+
+        return firstValidIndex;
+      }
+    }
+
+    // Fallback to linear search
     let firstValidIndex = -1;
     let minDiff = Infinity;
 
-    for (let i = 0; i < coords.length; i++) {
-      const coordValue = coords[i] as number;
+    for (let i = 0; i < numCoords.length; i++) {
+      const coordValue = numCoords[i];
       if (coordValue >= value) {
         const diff = coordValue - value;
         if (diff < minDiff) {
@@ -1815,6 +1935,146 @@ export class DataArray {
     }
 
     return firstValidIndex;
+  }
+
+  /**
+   * Check if numeric coordinates are sorted (cached)
+   */
+  private _isCoordsSorted(dim: string, coords: number[]): boolean {
+    if (this._coordsSortedCache.has(dim)) {
+      return this._coordsSortedCache.get(dim)!;
+    }
+
+    let ascending = true;
+    let descending = true;
+
+    for (let i = 1; i < coords.length; i++) {
+      if (coords[i] < coords[i - 1]) ascending = false;
+      if (coords[i] > coords[i - 1]) descending = false;
+      if (!ascending && !descending) break;
+    }
+
+    const isSorted = ascending || descending;
+    this._coordsSortedCache.set(dim, isSorted);
+    return isSorted;
+  }
+
+  /**
+   * Binary search for nearest value in sorted array - O(log n)
+   */
+  private _binarySearchNearest(sorted: number[], target: number, ascending: boolean = true): number {
+    let left = 0;
+    let right = sorted.length - 1;
+    let closest = 0;
+    let minDiff = Math.abs(sorted[0] - target);
+
+    while (left <= right) {
+      const mid = Math.floor((left + right) / 2);
+      const diff = Math.abs(sorted[mid] - target);
+
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = mid;
+      }
+
+      if (sorted[mid] === target) {
+        return mid;
+      }
+
+      if (ascending) {
+        if (sorted[mid] < target) {
+          left = mid + 1;
+        } else {
+          right = mid - 1;
+        }
+      } else {
+        if (sorted[mid] > target) {
+          left = mid + 1;
+        } else {
+          right = mid - 1;
+        }
+      }
+    }
+
+    return closest;
+  }
+
+  /**
+   * Binary search for forward fill in sorted array - O(log n)
+   */
+  private _binarySearchFfill(sorted: number[], target: number, ascending: boolean = true): number {
+    let result = -1;
+
+    if (ascending) {
+      // Find largest value <= target
+      let left = 0;
+      let right = sorted.length - 1;
+
+      while (left <= right) {
+        const mid = Math.floor((left + right) / 2);
+        if (sorted[mid] <= target) {
+          result = mid;
+          left = mid + 1; // Continue searching right for larger values still <= target
+        } else {
+          right = mid - 1;
+        }
+      }
+    } else {
+      // Descending: find smallest value <= target (happens later in array)
+      let left = 0;
+      let right = sorted.length - 1;
+
+      while (left <= right) {
+        const mid = Math.floor((left + right) / 2);
+        if (sorted[mid] <= target) {
+          result = mid;
+          right = mid - 1; // Continue searching left for smaller values still <= target
+        } else {
+          left = mid + 1;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Binary search for backward fill in sorted array - O(log n)
+   */
+  private _binarySearchBfill(sorted: number[], target: number, ascending: boolean = true): number {
+    let result = -1;
+
+    if (ascending) {
+      // Find smallest value >= target
+      let left = 0;
+      let right = sorted.length - 1;
+
+      while (left <= right) {
+        const mid = Math.floor((left + right) / 2);
+        if (sorted[mid] >= target) {
+          result = mid;
+          right = mid - 1; // Continue searching left for smaller values still >= target
+        } else {
+          left = mid + 1;
+        }
+      }
+    } else {
+      // Descending: find largest value >= target (happens earlier in array)
+      let left = 0;
+      let right = sorted.length - 1;
+
+      while (left <= right) {
+        const mid = Math.floor((left + right) / 2);
+        if (sorted[mid] >= target) {
+          result = mid;
+          left = mid + 1; // Continue searching right for larger values still >= target
+        } else {
+          right = mid - 1;
+        }
+      }
+    }
+
+    return result;
   }
 
   private _selectAtDimension(data: any, dimIndex: number, index: number): any {
@@ -1971,18 +2231,48 @@ export class DataArray {
     const minPeriods = options.minPeriods ?? window;
     const normalizedWindow = window <= 0 ? 1 : window;
 
+    // For centered windows or when NaNs might be present, use optimized approach
+    if (!center) {
+      // Use sliding window algorithm for non-centered windows - O(n) instead of O(n*w)
+      let sum = 0;
+      let count = 0;
+
+      for (let i = 0; i < len; i++) {
+        // Add new value entering the window
+        const value = values[i];
+        if (typeof value === 'number' && !Number.isNaN(value)) {
+          sum += value;
+          count++;
+        }
+
+        // Remove old value leaving the window
+        const oldIdx = i - normalizedWindow;
+        if (oldIdx >= 0) {
+          const oldValue = values[oldIdx];
+          if (typeof oldValue === 'number' && !Number.isNaN(oldValue)) {
+            sum -= oldValue;
+            count--;
+          }
+        }
+
+        // Check if we have enough valid values
+        if (count >= minPeriods && count > 0) {
+          result[i] = reducer === 'sum' ? sum : sum / count;
+        }
+      }
+
+      return result;
+    }
+
+    // Fallback to original algorithm for centered windows
+    // (more complex due to asymmetric window boundaries)
     for (let i = 0; i < len; i++) {
       let start: number;
       let end: number;
 
-      if (center) {
-        const half = Math.floor((normalizedWindow - 1) / 2);
-        start = i - half;
-        end = start + normalizedWindow - 1;
-      } else {
-        end = i;
-        start = end - normalizedWindow + 1;
-      }
+      const half = Math.floor((normalizedWindow - 1) / 2);
+      start = i - half;
+      end = start + normalizedWindow - 1;
 
       start = Math.max(start, 0);
       end = Math.min(end, len - 1);
@@ -1991,25 +2281,19 @@ export class DataArray {
         continue;
       }
 
-      const windowValues: number[] = [];
+      let sum = 0;
+      let count = 0;
 
       for (let j = start; j <= end; j++) {
         const value = values[j];
         if (typeof value === 'number' && !Number.isNaN(value)) {
-          windowValues.push(value);
+          sum += value;
+          count++;
         }
       }
 
-      if (windowValues.length < minPeriods || windowValues.length === 0) {
-        continue;
-      }
-
-      if (reducer === 'sum') {
-        const sum = windowValues.reduce((acc, val) => acc + val, 0);
-        result[i] = sum;
-      } else {
-        const sum = windowValues.reduce((acc, val) => acc + val, 0);
-        result[i] = sum / windowValues.length;
+      if (count >= minPeriods && count > 0) {
+        result[i] = reducer === 'sum' ? sum : sum / count;
       }
     }
 

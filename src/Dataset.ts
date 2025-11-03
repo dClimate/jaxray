@@ -38,7 +38,6 @@ export class Dataset {
   private _coordAttrs: { [coordName: string]: Attributes };
   private _precision: number = 6;
   private _isEncrypted: boolean = false;
-  private _coordsFrozen: boolean = false;
 
   constructor(
     dataVars: { [name: string]: DataArray } = {},
@@ -61,21 +60,8 @@ export class Dataset {
     for (const [name, dataArray] of Object.entries(dataVars)) {
       this.addVariable(name, dataArray);
     }
-
-    // Don't freeze here - freeze lazily on first getter access
   }
 
-  /**
-   * Freeze coordinates to make them immutable (lazy - only called on first getter access)
-   */
-  private _freezeCoords(): void {
-    if (this._coordsFrozen) return;
-    Object.freeze(this._coords);
-    for (const key in this._coords) {
-      Object.freeze(this._coords[key]);
-    }
-    this._coordsFrozen = true;
-  }
 
   /**
    * Get all data variable names
@@ -100,25 +86,27 @@ export class Dataset {
   }
 
   /**
-   * Get the coordinates (frozen/immutable - safe to return direct reference)
+   * Get the coordinates
+   * NOTE: Returns direct reference for performance. Do not mutate the returned object.
    */
   get coords(): Coordinates {
-    this._freezeCoords();
     return this._coords;
   }
 
   /**
    * Get the coordinate attributes
+   * NOTE: Returns direct reference for performance. Do not mutate the returned object.
    */
   get coordAttrs(): { [coordName: string]: Attributes } {
-    return deepClone(this._coordAttrs);
+    return this._coordAttrs;
   }
 
   /**
    * Get the attributes
+   * NOTE: Returns direct reference for performance. Do not mutate the returned object.
    */
   get attrs(): Attributes {
-    return deepClone(this._attrs);
+    return this._attrs;
   }
 
   /**
