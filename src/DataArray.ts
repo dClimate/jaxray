@@ -33,7 +33,23 @@ import {
   type ArrayWhereOperand,
   type BinaryOpOptions
 } from './ops/where.js';
-import { isTimeCoordinate, parseCFTimeUnits } from './time/cf-time.js';
+import { isTimeCoordinate, parseCFTimeUnits, cfTimeToDate } from './time/cf-time.js';
+import { findCoordinateIndex } from './utils/coordinate-indexing.js';
+import {
+  sumAll,
+  countAll,
+  divideArray,
+  elementWiseOp,
+  reshapeSqueezed,
+  selectAtDimension,
+  selectMultipleAtDimension,
+  sliceAtDimension
+} from './utils/data-operations.js';
+import {
+  performLazySelection,
+  mapIndexToOriginal
+} from './utils/lazy-selection.js';
+import { applyRolling } from './utils/rolling-operations.js';
 
 export class DataArray {
   private _block: DataBlock;
@@ -53,7 +69,6 @@ export class DataArray {
 
   // Performance optimization caches
   private _dimIndexMap: Map<string, number> = new Map();
-  private _coordsSortedCache: Map<string, boolean> = new Map();
   // private _precisionFactor: number;
 
   constructor(data: NDArray, options: DataArrayOptions = {}) {
@@ -255,7 +270,39 @@ export class DataArray {
   async sel(selection: Selection, options?: SelectionOptions): Promise<DataArray> {
     // Check if this is a lazy-loaded array with a loader function
     if (isLazyBlock(this._block)) {
-      return this._selLazy(selection, options);
+      const result = performLazySelection({
+        selection,
+        options,
+        dims: this._dims,
+        shape: this._shape,
+        coords: this._coords,
+        attrs: this._attrs,
+        name: this._name,
+        originalIndexMapping: this._originalIndexMapping,
+        lazyLoader: this._block.fetch
+      });
+
+      // Check if all dimensions were dropped (scalar result)
+      if (result.dims.length === 0) {
+        const data = await result.lazyLoader({});
+        return new DataArray(data, {
+          dims: result.dims,
+          coords: result.coords,
+          attrs: result.attrs,
+          name: result.name
+        });
+      }
+
+      return new DataArray(null, {
+        lazy: true,
+        virtualShape: result.virtualShape,
+        lazyLoader: result.lazyLoader,
+        dims: result.dims,
+        coords: result.coords,
+        attrs: result.attrs,
+        name: result.name,
+        originalIndexMapping: result.originalIndexMapping
+      });
     }
 
     const newData = this._selectData(selection, options);
@@ -341,20 +388,23 @@ export class DataArray {
     let startIdx: number;
     let endIdx: number;
 
+    const coordAttrs = (this._attrs as any)?._coordAttrs;
+    const chunkDimAttrs = coordAttrs?.[chunkDim] || this._attrs;
+
     if (dimSelection === undefined) {
       // No selection on chunk dimension - use full range
       startIdx = 0;
       endIdx = this._shape[chunkDimIndex] - 1;
     } else if (Array.isArray(dimSelection)) {
       // Array selection - get indices
-      const indices = dimSelection.map(v => this._findCoordinateIndex(chunkDim, v, { method, tolerance }));
+      const indices = dimSelection.map(v => findCoordinateIndex(this._coords[chunkDim], v, { method, tolerance }, chunkDim, chunkDimAttrs));
       startIdx = Math.min(...indices);
       endIdx = Math.max(...indices);
     } else if (typeof dimSelection === 'object' && 'start' in dimSelection) {
       // Slice selection
       const { start, stop } = dimSelection;
-      startIdx = start !== undefined ? this._findCoordinateIndex(chunkDim, start, { method, tolerance }) : 0;
-      endIdx = stop !== undefined ? this._findCoordinateIndex(chunkDim, stop, { method, tolerance }) : this._shape[chunkDimIndex] - 1;
+      startIdx = start !== undefined ? findCoordinateIndex(this._coords[chunkDim], start, { method, tolerance }, chunkDim, chunkDimAttrs) : 0;
+      endIdx = stop !== undefined ? findCoordinateIndex(this._coords[chunkDim], stop, { method, tolerance }, chunkDim, chunkDimAttrs) : this._shape[chunkDimIndex] - 1;
     } else {
       // Single value - no need to stream
       const result = await this.sel(selection, { method, tolerance });
@@ -444,7 +494,7 @@ export class DataArray {
   sum(dim?: DimensionName): DataArray | number {
     if (!dim) {
       // Sum all values using iterative approach (no flatten needed)
-      return this._sumAll(this._block.materialize());
+      return sumAll(this._block.materialize());
     }
 
     const dimIndex = this._getDimIndex(dim);
@@ -454,14 +504,14 @@ export class DataArray {
 
     const result = this._reduce(dimIndex, (acc, val) => acc + (val as number));
     const newDims = this._dims.filter((_, i) => i !== dimIndex);
-    
+
     // If all dimensions are reduced, return a scalar
     if (newDims.length === 0) {
       return result as number;
     }
-    
+
     const newCoords: Coordinates = {};
-    
+
     for (const d of newDims) {
       newCoords[d] = this._coords[d];
     }
@@ -480,8 +530,8 @@ export class DataArray {
   mean(dim?: DimensionName): DataArray | number {
     if (!dim) {
       const data = this._block.materialize();
-      const sum = this._sumAll(data);
-      const count = this._countAll(data);
+      const sum = sumAll(data);
+      const count = countAll(data);
       return sum / count;
     }
 
@@ -492,17 +542,17 @@ export class DataArray {
 
     const dimSize = this._shape[dimIndex];
     const sumResult = this._reduce(dimIndex, (acc, val) => acc + (val as number));
-    const meanResult = this._divideArray(sumResult, dimSize);
-    
+    const meanResult = divideArray(sumResult, dimSize);
+
     const newDims = this._dims.filter((_, i) => i !== dimIndex);
-    
+
     // If all dimensions are reduced, return a scalar
     if (newDims.length === 0) {
       return meanResult as number;
     }
-    
+
     const newCoords: Coordinates = {};
-    
+
     for (const d of newDims) {
       newCoords[d] = this._coords[d];
     }
@@ -632,7 +682,7 @@ export class DataArray {
       return this;
     }
 
-    const newData = this._reshapeSqueezed(this._block.materialize(), squeezedIndices);
+    const newData = reshapeSqueezed(this._block.materialize(), squeezedIndices);
 
     return new DataArray(newData, {
       dims: newDims,
@@ -878,12 +928,9 @@ export class DataArray {
         // Convert time coordinates to datetime strings
         if (timeCoordInfo[dim] && typeof coordValue === 'number') {
           const units = timeCoordInfo[dim];
-          const date = parseCFTimeUnits(units);
-          if (date) {
-            const convertedDate = this._convertCFTimeToDate(coordValue, date.unit, date.referenceDate);
-            if (convertedDate) {
-              coordValue = convertedDate.toISOString();
-            }
+          const convertedDate = cfTimeToDate(coordValue, units);
+          if (convertedDate) {
+            coordValue = convertedDate.toISOString();
           }
         } else if (typeof coordValue === 'number') {
           // Round numeric coordinates to avoid floating-point precision errors
@@ -902,42 +949,6 @@ export class DataArray {
     return records;
   }
 
-  /**
-   * Convert CF time value to Date
-   * Helper method for toRecords
-   */
-  private _convertCFTimeToDate(value: number, unit: string, referenceDate: Date): Date | null {
-    const refTime = referenceDate.getTime();
-    let milliseconds: number;
-
-    switch (unit) {
-      case 'second':
-        milliseconds = value * 1000;
-        break;
-      case 'minute':
-        milliseconds = value * 60 * 1000;
-        break;
-      case 'hour':
-        milliseconds = value * 60 * 60 * 1000;
-        break;
-      case 'day':
-        milliseconds = value * 24 * 60 * 60 * 1000;
-        break;
-      case 'week':
-        milliseconds = value * 7 * 24 * 60 * 60 * 1000;
-        break;
-      case 'month':
-        milliseconds = value * 30 * 24 * 60 * 60 * 1000;
-        break;
-      case 'year':
-        milliseconds = value * 365.25 * 24 * 60 * 60 * 1000;
-        break;
-      default:
-        return null;
-    }
-
-    return new Date(refTime + milliseconds);
-  }
 
   /**
    * Get the bounding box for spatial coordinates
@@ -1010,47 +1021,6 @@ export class DataArray {
     return index;
   }
 
-  /**
-   * Sum all values in N-dimensional array without flattening - O(n) time, O(1) extra space
-   */
-  private _sumAll(data: NDArray): number {
-    let sum = 0;
-    const stack: any[] = [data];
-
-    while (stack.length > 0) {
-      const current = stack.pop()!;
-      if (Array.isArray(current)) {
-        for (let i = current.length - 1; i >= 0; i--) {
-          stack.push(current[i]);
-        }
-      } else if (typeof current === 'number') {
-        sum += current;
-      }
-    }
-
-    return sum;
-  }
-
-  /**
-   * Count all elements in N-dimensional array without flattening - O(n) time, O(1) extra space
-   */
-  private _countAll(data: NDArray): number {
-    let count = 0;
-    const stack: any[] = [data];
-
-    while (stack.length > 0) {
-      const current = stack.pop()!;
-      if (Array.isArray(current)) {
-        for (let i = current.length - 1; i >= 0; i--) {
-          stack.push(current[i]);
-        }
-      } else {
-        count++;
-      }
-    }
-
-    return count;
-  }
 
   /**
    * Round a number to the specified precision
@@ -1338,238 +1308,6 @@ export class DataArray {
     return op(left, right);
   }
 
-  private async _selLazy(selection: Selection, options?: SelectionOptions): Promise<DataArray> {
-    if (!isLazyBlock(this._block)) {
-      throw new Error('Attempted lazy selection on non-lazy DataArray');
-    }
-
-    const loader = this._block.fetch;
-
-    const indexRanges: Record<string, LazyIndexRange> = {};
-    const fixedOriginalIndices: { [dim: string]: number } = {};
-    const newDims: DimensionName[] = [];
-    const newCoords: Coordinates = {};
-    const newOriginalIndexMapping: { [dim: string]: number[] } = {};
-
-    for (let i = 0; i < this._dims.length; i++) {
-      const dim = this._dims[i];
-      const sel = selection[dim];
-
-      if (sel === undefined) {
-        const length = this._shape[i];
-        const mapping = Array.from({ length }, (_, j) => this._mapIndexToOriginal(dim, j));
-        if (mapping.length > 0) {
-          indexRanges[dim] = {
-            start: mapping[0],
-            stop: mapping[mapping.length - 1] + 1
-          };
-          newOriginalIndexMapping[dim] = mapping;
-        } else {
-          indexRanges[dim] = { start: 0, stop: 0 };
-          newOriginalIndexMapping[dim] = [];
-        }
-
-        newDims.push(dim);
-        newCoords[dim] = this._coords[dim];
-      } else if (
-        typeof sel === 'number' ||
-        typeof sel === 'string' ||
-        typeof sel === 'bigint' ||
-        sel instanceof Date
-      ) {
-        const index = this._findCoordinateIndex(dim, sel, options);
-        const originalIndex = this._mapIndexToOriginal(dim, index);
-        indexRanges[dim] = originalIndex;
-        fixedOriginalIndices[dim] = originalIndex;
-      } else if (Array.isArray(sel)) {
-        const indices = sel.map(v => this._findCoordinateIndex(dim, v, options));
-        const minIdx = Math.min(...indices);
-        const maxIdx = Math.max(...indices);
-        const mapping = Array.from(
-          { length: maxIdx - minIdx + 1 },
-          (_, j) => this._mapIndexToOriginal(dim, minIdx + j)
-        );
-
-        indexRanges[dim] = {
-          start: mapping[0],
-          stop: mapping[mapping.length - 1] + 1
-        };
-
-        newDims.push(dim);
-        newCoords[dim] = this._coords[dim].slice(minIdx, maxIdx + 1);
-        newOriginalIndexMapping[dim] = mapping;
-      } else if (typeof sel === 'object' && 'start' in sel) {
-        const { start, stop } = sel;
-        const startIndex = start !== undefined ? this._findCoordinateIndex(dim, start, options) : 0;
-        const stopIndex =
-          stop !== undefined ? this._findCoordinateIndex(dim, stop, options) + 1 : this._shape[i];
-
-        const mapping = Array.from(
-          { length: Math.max(0, stopIndex - startIndex) },
-          (_, j) => this._mapIndexToOriginal(dim, startIndex + j)
-        );
-
-        if (mapping.length > 0) {
-          indexRanges[dim] = {
-            start: mapping[0],
-            stop: mapping[mapping.length - 1] + 1
-          };
-        } else {
-          indexRanges[dim] = { start: 0, stop: 0 };
-        }
-
-        newDims.push(dim);
-        newCoords[dim] = this._coords[dim].slice(startIndex, stopIndex);
-        newOriginalIndexMapping[dim] = mapping;
-      }
-    }
-
-    const remainingDims = newDims.length;
-
-    if (remainingDims === 0) {
-      const data = await loader(indexRanges);
-
-      if (data === undefined || data === null) {
-        throw new Error('Lazy loader returned undefined/null data');
-      }
-
-      return new DataArray(data, {
-        dims: newDims,
-        coords: newCoords,
-        attrs: deepClone(this._attrs),
-        name: this._name
-      });
-    }
-
-    const virtualShape = newDims.map(dim => {
-      if (newCoords[dim]) {
-        return newCoords[dim].length;
-      }
-      const mapping = newOriginalIndexMapping[dim];
-      if (mapping) {
-        return mapping.length;
-      }
-      const dimIndex = this._dims.indexOf(dim);
-      return dimIndex !== -1 ? this._shape[dimIndex] : 0;
-    });
-
-    const parentDims = [...this._dims];
-
-    const lazyLoader = async (requestedRanges: Record<string, LazyIndexRange>) => {
-      const resolved: Record<string, LazyIndexRange> = {};
-
-      for (const dim of parentDims) {
-        if (fixedOriginalIndices[dim] !== undefined) {
-          resolved[dim] = fixedOriginalIndices[dim];
-          continue;
-        }
-
-        const mapping = newOriginalIndexMapping[dim];
-        const parentRange = indexRanges[dim];
-        const requested = requestedRanges[dim];
-
-        if (!mapping || mapping.length === 0) {
-          if (typeof parentRange === 'number') {
-            resolved[dim] = parentRange;
-          } else if (parentRange) {
-            resolved[dim] = { start: parentRange.start, stop: parentRange.stop };
-          } else {
-            resolved[dim] = { start: 0, stop: 0 };
-          }
-          continue;
-        }
-
-        const minOriginal = mapping[0];
-        const maxOriginal = mapping[mapping.length - 1];
-        const maxOriginalExclusive = maxOriginal + 1;
-
-        if (requested === undefined) {
-          resolved[dim] = {
-            start: minOriginal,
-            stop: maxOriginalExclusive
-          };
-          continue;
-        }
-
-        if (typeof requested === 'number') {
-          if (requested >= 0 && requested < mapping.length) {
-            const originalIndex = mapping[requested];
-            if (originalIndex === undefined) {
-              throw new Error(
-                `Lazy selection index ${requested} out of bounds for dimension '${dim}' of length ${mapping.length}`
-              );
-            }
-            resolved[dim] = originalIndex;
-          } else {
-            const clampedOriginal = Math.min(Math.max(requested, minOriginal), maxOriginal);
-            resolved[dim] = clampedOriginal;
-          }
-          continue;
-        }
-
-        const startPos = requested.start ?? 0;
-        const stopPos = requested.stop ?? mapping.length;
-
-        const looksLikeChildSpace =
-          startPos >= 0 &&
-          startPos < mapping.length &&
-          stopPos <= mapping.length &&
-          stopPos >= 0;
-
-        if (looksLikeChildSpace) {
-          const clampedStart = Math.max(0, Math.min(startPos, mapping.length - 1));
-          const clampedStopIdx = Math.max(
-            clampedStart + 1,
-            Math.min(stopPos, mapping.length)
-          );
-
-          resolved[dim] = {
-            start: mapping[clampedStart],
-            stop: mapping[clampedStopIdx - 1] + 1
-          };
-        } else {
-          const clampedStartOriginal = Math.max(
-            minOriginal,
-            Math.min(startPos, maxOriginalExclusive)
-          );
-          const clampedStopOriginal = Math.max(
-            clampedStartOriginal,
-            Math.min(stopPos, maxOriginalExclusive)
-          );
-
-          resolved[dim] = {
-            start: clampedStartOriginal,
-            stop: clampedStopOriginal
-          };
-        }
-      }
-
-      return loader(resolved);
-    };
-
-    return new DataArray(null, {
-      lazy: true,
-      virtualShape,
-      lazyLoader,
-      dims: newDims,
-      coords: newCoords,
-      attrs: deepClone(this._attrs),
-      name: this._name,
-      originalIndexMapping: newOriginalIndexMapping
-    });
-  }
-
-  /**
-   * Map a current index to the original index in the source dataset.
-   * If this DataArray has an originalIndexMapping (from a previous selection),
-   * use it to look up the original index. Otherwise, the current index IS the original.
-   */
-  private _mapIndexToOriginal(dim: DimensionName, currentIndex: number): number {
-    if (this._originalIndexMapping && this._originalIndexMapping[dim]) {
-      return this._originalIndexMapping[dim][currentIndex];
-    }
-    return currentIndex;
-  }
 
   private _selectData(selection: Selection, options?: SelectionOptions): NDArray {
     let result: any = this._block.materialize();
@@ -1588,530 +1326,32 @@ export class DataArray {
 
       if (typeof sel === 'number' || typeof sel === 'string' || typeof sel === 'bigint' || sel instanceof Date) {
         // Single value selection - this will drop a dimension
-        const index = this._findCoordinateIndex(dim, sel, options);
-        result = this._selectAtDimension(result, currentDimIndex, index);
+        const coordAttrs = (this._attrs as any)?._coordAttrs;
+        const dimAttrs = coordAttrs?.[dim] || this._attrs;
+        const index = findCoordinateIndex(this._coords[dim], sel, options, dim, dimAttrs);
+        result = selectAtDimension(result, currentDimIndex, index);
         dimensionsDropped++;
       } else if (Array.isArray(sel)) {
         // Multiple values selection
-        const indices = sel.map(v => this._findCoordinateIndex(dim, v, options));
-        result = this._selectMultipleAtDimension(result, currentDimIndex, indices);
+        const coordAttrs = (this._attrs as any)?._coordAttrs;
+        const dimAttrs = coordAttrs?.[dim] || this._attrs;
+        const indices = sel.map(v => findCoordinateIndex(this._coords[dim], v, options, dim, dimAttrs));
+        result = selectMultipleAtDimension(result, currentDimIndex, indices);
       } else if (typeof sel === 'object' && 'start' in sel) {
         // Slice selection
         const { start, stop } = sel;
-        const startIndex = start !== undefined ? this._findCoordinateIndex(dim, start, options) : 0;
-        const stopIndex = stop !== undefined ? this._findCoordinateIndex(dim, stop, options) + 1 : this._shape[i];
-        result = this._sliceAtDimension(result, currentDimIndex, startIndex, stopIndex);
+        const coordAttrs = (this._attrs as any)?._coordAttrs;
+        const dimAttrs = coordAttrs?.[dim] || this._attrs;
+        const startIndex = start !== undefined ? findCoordinateIndex(this._coords[dim], start, options, dim, dimAttrs) : 0;
+        const stopIndex = stop !== undefined ? findCoordinateIndex(this._coords[dim], stop, options, dim, dimAttrs) + 1 : this._shape[i];
+        result = sliceAtDimension(result, currentDimIndex, startIndex, stopIndex);
       }
     }
 
     return result;
   }
 
-  private _findCoordinateIndex(dim: DimensionName, value: CoordinateValue, options?: SelectionOptions): number {
-    const coords = this._coords[dim];
-    const method = options?.method;
-    const tolerance = options?.tolerance;
 
-    const coordAttrs = (this._attrs as any)?._coordAttrs;
-    const dimAttrs = coordAttrs?.[dim] || this._attrs;
-    const units = dimAttrs?.units as string | undefined;
-    const timeLike = isTimeCoordinate(dimAttrs);
-    let parsedUnits: ReturnType<typeof parseCFTimeUnits> | null | undefined;
-
-    const parseUnits = () => {
-      if (parsedUnits === undefined) {
-        parsedUnits = units ? parseCFTimeUnits(units) : null;
-      }
-      return parsedUnits;
-    };
-
-    const convertDateToNumeric = (date: Date): number | undefined => {
-      const parsed = parseUnits();
-      if (!parsed) return undefined;
-      const { unit, referenceDate } = parsed;
-      const diff = date.getTime() - referenceDate.getTime();
-      switch (unit) {
-        case 'second':
-          return diff / 1000;
-        case 'minute':
-          return diff / (60 * 1000);
-        case 'hour':
-          return diff / (60 * 60 * 1000);
-        case 'day':
-          return diff / (24 * 60 * 60 * 1000);
-        case 'week':
-          return diff / (7 * 24 * 60 * 60 * 1000);
-        case 'month':
-          return diff / (30 * 24 * 60 * 60 * 1000);
-        case 'year':
-          return diff / (365.25 * 24 * 60 * 60 * 1000);
-        default:
-          return diff / 1000;
-      }
-    };
-
-    const convertValueToNumeric = (val: CoordinateValue): number | undefined => {
-      if (typeof val === 'number') return val;
-      if (typeof val === 'bigint') return Number(val);
-      if (val instanceof Date) return convertDateToNumeric(val);
-      if (typeof val === 'string' && timeLike && units) {
-        const parsed = parseUnits();
-        if (!parsed) return undefined;
-        let inputStr = val;
-        if (!inputStr.endsWith('Z') && !inputStr.includes('+')) {
-          inputStr = `${inputStr}Z`;
-        }
-        const asDate = new Date(inputStr);
-        if (Number.isNaN(asDate.getTime())) {
-          throw new Error(`Invalid date string: '${val}'`);
-        }
-        return convertDateToNumeric(asDate);
-      }
-      return undefined;
-    };
-
-    let numericValue: number | undefined = convertValueToNumeric(value);
-
-    if (numericValue === undefined) {
-      if (typeof value === 'string') {
-        return this._findIndexFallback(coords, value, method, tolerance, dim);
-      }
-      return this._findIndexFallback(coords, value, method, tolerance, dim);
-    }
-
-    const numericCoords: number[] = [];
-    let canUseNumeric = true;
-    for (const coord of coords) {
-      const converted = convertValueToNumeric(coord);
-      if (converted === undefined) {
-        canUseNumeric = false;
-        break;
-      }
-      numericCoords.push(converted);
-    }
-
-    if (canUseNumeric && numericCoords.length >= 2) {
-      const numCoords = numericCoords;
-      const min = numCoords[0];
-      const step = numCoords.length > 1 ? (numCoords[1] - numCoords[0]) : 1;
-
-      // Check if coordinates are evenly spaced (with small tolerance for floating point)
-      const isEvenlySpaced = numCoords.length <= 2 || numCoords.every((coord, i) => {
-        if (i === 0) return true;
-        const expectedValue = min + i * step;
-        return Math.abs(coord - expectedValue) < Math.abs(step) * 1e-6;
-      });
-
-      if (isEvenlySpaced && Math.abs(step) > 1e-10) {
-        // Use arithmetic calculation (O(1) instead of O(n))
-        const rawIndex = (numericValue - min) / step;
-
-        let index: number;
-        switch (method) {
-          case 'nearest':
-            index = Math.round(rawIndex);
-            break;
-          case 'ffill':
-          case 'pad':
-            index = Math.floor(rawIndex);
-            break;
-          case 'bfill':
-          case 'backfill':
-            index = Math.ceil(rawIndex);
-            break;
-          case null:
-          case undefined:
-            // Exact match - check if close to integer
-            const roundedIndex = Math.round(rawIndex);
-            const indexTolerance = tolerance !== undefined ? tolerance / Math.abs(step) : 1e-3;
-            if (Math.abs(rawIndex - roundedIndex) > indexTolerance) {
-              throw new Error(`Coordinate value '${value}' not found in dimension '${dim}' (no exact match)`);
-            }
-            index = roundedIndex;
-            break;
-          default:
-            throw new Error(`Unknown method: ${method}`);
-        }
-
-        // Bounds check
-        if (index < 0 || index >= coords.length) {
-          if (method === 'ffill' || method === 'pad') {
-            throw new Error(`No coordinate <= ${numericValue} for forward fill`);
-          } else if (method === 'bfill' || method === 'backfill') {
-            throw new Error(`No coordinate >= ${numericValue} for backward fill`);
-          } else if (tolerance !== undefined) {
-            throw new Error(`No coordinate within tolerance ${tolerance} of value ${numericValue}`);
-          }
-          throw new Error(`Coordinate value '${value}' out of bounds for dimension '${dim}'`);
-        }
-
-        // Optional: verify tolerance if specified
-        if (tolerance !== undefined) {
-          const actualValue = numCoords[index];
-          if (Math.abs(actualValue - numericValue) > tolerance) {
-            throw new Error(`No coordinate within tolerance ${tolerance} of value ${numericValue}`);
-          }
-        }
-
-        return index;
-      }
-    }
-
-    // Fallback to linear search for non-evenly-spaced or non-numeric coordinates
-    return this._findIndexFallback(coords, numericValue, method, tolerance, dim);
-  }
-
-  /**
-   * Fallback method using linear search (original indexOf-based approach)
-   */
-  private _findIndexFallback(coords: CoordinateValue[], value: CoordinateValue, method?: string, tolerance?: number, dim?: string): number {
-    // Apply selection method
-    if (method === 'nearest') {
-      return this._findNearestIndex(coords, value, tolerance, dim);
-    } else if (method === 'ffill' || method === 'pad') {
-      return this._findFfillIndex(coords, value, tolerance, dim);
-    } else if (method === 'bfill' || method === 'backfill') {
-      return this._findBfillIndex(coords, value, tolerance, dim);
-    }
-
-    // Default exact match
-    const index = coords.indexOf(value);
-    if (index === -1) {
-      throw new Error(`Coordinate value '${value}' not found in dimension`);
-    }
-
-    return index;
-  }
-
-  /**
-   * Find nearest coordinate index (optimized with binary search for sorted coords)
-   */
-  private _findNearestIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number, dim?: string): number {
-    if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
-      throw new Error('Nearest neighbor lookup requires numeric coordinates');
-    }
-
-    const numCoords = coords as number[];
-
-    // Use binary search if coordinates are sorted
-    if (dim && numCoords.length > 20) {
-      if (this._isCoordsSorted(dim, numCoords)) {
-        const ascending = numCoords.length < 2 || numCoords[1] >= numCoords[0];
-        const closestIndex = this._binarySearchNearest(numCoords, value, ascending);
-        const minDiff = Math.abs(numCoords[closestIndex] - value);
-
-        if (tolerance !== undefined && minDiff > tolerance) {
-          throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
-        }
-
-        return closestIndex;
-      }
-    }
-
-    // Fallback to linear search
-    let closestIndex = 0;
-    let minDiff = Math.abs(numCoords[0] - value);
-
-    for (let i = 1; i < numCoords.length; i++) {
-      const diff = Math.abs(numCoords[i] - value);
-      if (diff < minDiff) {
-        minDiff = diff;
-        closestIndex = i;
-      }
-    }
-
-    if (tolerance !== undefined && minDiff > tolerance) {
-      throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
-    }
-
-    return closestIndex;
-  }
-
-  /**
-   * Find forward fill index (last valid index <= value) - optimized with binary search
-   */
-  private _findFfillIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number, dim?: string): number {
-    if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
-      throw new Error('Forward fill requires numeric coordinates');
-    }
-
-    const numCoords = coords as number[];
-
-    // Use binary search if coordinates are sorted
-    if (dim && numCoords.length > 20) {
-      if (this._isCoordsSorted(dim, numCoords)) {
-        const ascending = numCoords.length < 2 || numCoords[1] >= numCoords[0];
-        const lastValidIndex = this._binarySearchFfill(numCoords, value, ascending);
-
-        if (lastValidIndex === -1) {
-          throw new Error(`No coordinate <= ${value} for forward fill`);
-        }
-
-        const minDiff = value - numCoords[lastValidIndex];
-        if (tolerance !== undefined && minDiff > tolerance) {
-          throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
-        }
-
-        return lastValidIndex;
-      }
-    }
-
-    // Fallback to linear search
-    let lastValidIndex = -1;
-    let minDiff = Infinity;
-
-    for (let i = 0; i < numCoords.length; i++) {
-      const coordValue = numCoords[i];
-      if (coordValue <= value) {
-        const diff = value - coordValue;
-        if (diff < minDiff) {
-          minDiff = diff;
-          lastValidIndex = i;
-        }
-      }
-    }
-
-    if (lastValidIndex === -1) {
-      throw new Error(`No coordinate <= ${value} for forward fill`);
-    }
-
-    if (tolerance !== undefined && minDiff > tolerance) {
-      throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
-    }
-
-    return lastValidIndex;
-  }
-
-  /**
-   * Find backward fill index (first valid index >= value) - optimized with binary search
-   */
-  private _findBfillIndex(coords: CoordinateValue[], value: CoordinateValue, tolerance?: number, dim?: string): number {
-    if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
-      throw new Error('Backward fill requires numeric coordinates');
-    }
-
-    const numCoords = coords as number[];
-
-    // Use binary search if coordinates are sorted
-    if (dim && numCoords.length > 20) {
-      if (this._isCoordsSorted(dim, numCoords)) {
-        const ascending = numCoords.length < 2 || numCoords[1] >= numCoords[0];
-        const firstValidIndex = this._binarySearchBfill(numCoords, value, ascending);
-
-        if (firstValidIndex === -1) {
-          throw new Error(`No coordinate >= ${value} for backward fill`);
-        }
-
-        const minDiff = numCoords[firstValidIndex] - value;
-        if (tolerance !== undefined && minDiff > tolerance) {
-          throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
-        }
-
-        return firstValidIndex;
-      }
-    }
-
-    // Fallback to linear search
-    let firstValidIndex = -1;
-    let minDiff = Infinity;
-
-    for (let i = 0; i < numCoords.length; i++) {
-      const coordValue = numCoords[i];
-      if (coordValue >= value) {
-        const diff = coordValue - value;
-        if (diff < minDiff) {
-          minDiff = diff;
-          firstValidIndex = i;
-        }
-      }
-    }
-
-    if (firstValidIndex === -1) {
-      throw new Error(`No coordinate >= ${value} for backward fill`);
-    }
-
-    if (tolerance !== undefined && minDiff > tolerance) {
-      throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
-    }
-
-    return firstValidIndex;
-  }
-
-  /**
-   * Check if numeric coordinates are sorted (cached)
-   */
-  private _isCoordsSorted(dim: string, coords: number[]): boolean {
-    if (this._coordsSortedCache.has(dim)) {
-      return this._coordsSortedCache.get(dim)!;
-    }
-
-    let ascending = true;
-    let descending = true;
-
-    for (let i = 1; i < coords.length; i++) {
-      if (coords[i] < coords[i - 1]) ascending = false;
-      if (coords[i] > coords[i - 1]) descending = false;
-      if (!ascending && !descending) break;
-    }
-
-    const isSorted = ascending || descending;
-    this._coordsSortedCache.set(dim, isSorted);
-    return isSorted;
-  }
-
-  /**
-   * Binary search for nearest value in sorted array - O(log n)
-   */
-  private _binarySearchNearest(sorted: number[], target: number, ascending: boolean = true): number {
-    let left = 0;
-    let right = sorted.length - 1;
-    let closest = 0;
-    let minDiff = Math.abs(sorted[0] - target);
-
-    while (left <= right) {
-      const mid = Math.floor((left + right) / 2);
-      const diff = Math.abs(sorted[mid] - target);
-
-      if (diff < minDiff) {
-        minDiff = diff;
-        closest = mid;
-      }
-
-      if (sorted[mid] === target) {
-        return mid;
-      }
-
-      if (ascending) {
-        if (sorted[mid] < target) {
-          left = mid + 1;
-        } else {
-          right = mid - 1;
-        }
-      } else {
-        if (sorted[mid] > target) {
-          left = mid + 1;
-        } else {
-          right = mid - 1;
-        }
-      }
-    }
-
-    return closest;
-  }
-
-  /**
-   * Binary search for forward fill in sorted array - O(log n)
-   */
-  private _binarySearchFfill(sorted: number[], target: number, ascending: boolean = true): number {
-    let result = -1;
-
-    if (ascending) {
-      // Find largest value <= target
-      let left = 0;
-      let right = sorted.length - 1;
-
-      while (left <= right) {
-        const mid = Math.floor((left + right) / 2);
-        if (sorted[mid] <= target) {
-          result = mid;
-          left = mid + 1; // Continue searching right for larger values still <= target
-        } else {
-          right = mid - 1;
-        }
-      }
-    } else {
-      // Descending: find smallest value <= target (happens later in array)
-      let left = 0;
-      let right = sorted.length - 1;
-
-      while (left <= right) {
-        const mid = Math.floor((left + right) / 2);
-        if (sorted[mid] <= target) {
-          result = mid;
-          right = mid - 1; // Continue searching left for smaller values still <= target
-        } else {
-          left = mid + 1;
-        }
-      }
-    }
-
-    return result;
-  }
-
-  /**
-   * Binary search for backward fill in sorted array - O(log n)
-   */
-  private _binarySearchBfill(sorted: number[], target: number, ascending: boolean = true): number {
-    let result = -1;
-
-    if (ascending) {
-      // Find smallest value >= target
-      let left = 0;
-      let right = sorted.length - 1;
-
-      while (left <= right) {
-        const mid = Math.floor((left + right) / 2);
-        if (sorted[mid] >= target) {
-          result = mid;
-          right = mid - 1; // Continue searching left for smaller values still >= target
-        } else {
-          left = mid + 1;
-        }
-      }
-    } else {
-      // Descending: find largest value >= target (happens earlier in array)
-      let left = 0;
-      let right = sorted.length - 1;
-
-      while (left <= right) {
-        const mid = Math.floor((left + right) / 2);
-        if (sorted[mid] >= target) {
-          result = mid;
-          left = mid + 1; // Continue searching right for larger values still >= target
-        } else {
-          right = mid - 1;
-        }
-      }
-    }
-
-    return result;
-  }
-
-  private _selectAtDimension(data: any, dimIndex: number, index: number): any {
-    if (dimIndex === 0) {
-      return data[index];
-    }
-
-    if (!Array.isArray(data)) {
-      throw new Error('Invalid dimension index');
-    }
-
-    return data.map((item: any) => this._selectAtDimension(item, dimIndex - 1, index));
-  }
-
-  private _selectMultipleAtDimension(data: any, dimIndex: number, indices: number[]): any {
-    if (dimIndex === 0) {
-      return indices.map(i => data[i]);
-    }
-
-    if (!Array.isArray(data)) {
-      throw new Error('Invalid dimension index');
-    }
-
-    return data.map((item: any) => this._selectMultipleAtDimension(item, dimIndex - 1, indices));
-  }
-
-  private _sliceAtDimension(data: any, dimIndex: number, start: number, stop: number): any {
-    if (dimIndex === 0) {
-      return data.slice(start, stop);
-    }
-
-    if (!Array.isArray(data)) {
-      throw new Error('Invalid dimension index');
-    }
-
-    return data.map((item: any) => this._sliceAtDimension(item, dimIndex - 1, start, stop));
-  }
 
   private _getCoordinateSlice(dim: DimensionName, start?: CoordinateValue, stop?: CoordinateValue): CoordinateValue[] {
     const coords = this._coords[dim];
@@ -2134,7 +1374,7 @@ export class DataArray {
         return data.reduce((acc: any, row: any) => {
           if (!acc) return deepClone(row);
           if (Array.isArray(row)) {
-            return this._elementWiseOp(acc, row, reducer);
+            return elementWiseOp(acc, row, reducer);
           }
           return reducer(acc as number, row as number);
         });
@@ -2158,147 +1398,7 @@ export class DataArray {
     }
   }
 
-  private _elementWiseOp(a: any, b: any, op: (x: number, y: number) => number): any {
-    if (!Array.isArray(a) && !Array.isArray(b)) {
-      return op(a as number, b as number);
-    }
-    if (Array.isArray(a) && Array.isArray(b)) {
-      return a.map((val, i) => this._elementWiseOp(val, b[i], op));
-    }
-    throw new Error('Mismatched array dimensions');
-  }
 
-  private _divideArray(data: NDArray, divisor: number): NDArray {
-    if (!Array.isArray(data)) {
-      return (data as number) / divisor;
-    }
-
-    return data.map((item: any) => this._divideArray(item, divisor)) as NDArray;
-  }
-
-  private _reshapeSqueezed(data: NDArray, squeezedDims: number[]): NDArray {
-    if (!Array.isArray(data) || squeezedDims.length === 0) {
-      return data;
-    }
-
-    const helper = (input: any, dimIndex: number): any => {
-      if (!Array.isArray(input)) {
-        return input;
-      }
-
-      if (squeezedDims.includes(dimIndex) && input.length === 1) {
-        return helper(input[0], dimIndex + 1);
-      }
-
-      return input.map(child => helper(child, dimIndex + 1));
-    };
-
-    return helper(data, 0) as NDArray;
-  }
-
-  _applyRolling(
-    dimIndex: number,
-    window: number,
-    options: RollingOptions,
-    reducer: 'mean' | 'sum'
-  ): NDArray {
-    const materialized = this._block.materialize();
-
-    const apply = (input: any, axis: number): any => {
-      if (!Array.isArray(input)) {
-        return input;
-      }
-
-      if (axis === dimIndex) {
-        return this._rolling1D(input as DataValue[], window, options, reducer);
-      }
-
-      return input.map(child => apply(child, axis + 1));
-    };
-
-    return apply(materialized, 0) as NDArray;
-  }
-
-  private _rolling1D(
-    values: DataValue[],
-    window: number,
-    options: RollingOptions,
-    reducer: 'mean' | 'sum'
-  ): DataValue[] {
-    const len = values.length;
-    const result: DataValue[] = new Array(len).fill(null);
-    const center = options.center ?? false;
-    const minPeriods = options.minPeriods ?? window;
-    const normalizedWindow = window <= 0 ? 1 : window;
-
-    // For centered windows or when NaNs might be present, use optimized approach
-    if (!center) {
-      // Use sliding window algorithm for non-centered windows - O(n) instead of O(n*w)
-      let sum = 0;
-      let count = 0;
-
-      for (let i = 0; i < len; i++) {
-        // Add new value entering the window
-        const value = values[i];
-        if (typeof value === 'number' && !Number.isNaN(value)) {
-          sum += value;
-          count++;
-        }
-
-        // Remove old value leaving the window
-        const oldIdx = i - normalizedWindow;
-        if (oldIdx >= 0) {
-          const oldValue = values[oldIdx];
-          if (typeof oldValue === 'number' && !Number.isNaN(oldValue)) {
-            sum -= oldValue;
-            count--;
-          }
-        }
-
-        // Check if we have enough valid values
-        if (count >= minPeriods && count > 0) {
-          result[i] = reducer === 'sum' ? sum : sum / count;
-        }
-      }
-
-      return result;
-    }
-
-    // Fallback to original algorithm for centered windows
-    // (more complex due to asymmetric window boundaries)
-    for (let i = 0; i < len; i++) {
-      let start: number;
-      let end: number;
-
-      const half = Math.floor((normalizedWindow - 1) / 2);
-      start = i - half;
-      end = start + normalizedWindow - 1;
-
-      start = Math.max(start, 0);
-      end = Math.min(end, len - 1);
-
-      if (end < start) {
-        continue;
-      }
-
-      let sum = 0;
-      let count = 0;
-
-      for (let j = start; j <= end; j++) {
-        const value = values[j];
-        if (typeof value === 'number' && !Number.isNaN(value)) {
-          sum += value;
-          count++;
-        }
-      }
-
-      if (count >= minPeriods && count > 0) {
-        result[i] = reducer === 'sum' ? sum : sum / count;
-      }
-    }
-
-    return result;
-  }
 
   /**
    * Select best dimension to chunk along for streaming
@@ -2358,7 +1458,13 @@ class DataArrayRolling {
   }
 
   private _apply(reducer: 'mean' | 'sum'): DataArray {
-    const data = this._source._applyRolling(this._dimIndex, this._window, this._options, reducer);
+    const data = applyRolling(
+      this._source.data,
+      this._dimIndex,
+      this._window,
+      this._options,
+      reducer
+    );
 
     return new DataArray(data, {
       dims: this._source.dims,
