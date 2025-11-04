@@ -599,6 +599,142 @@ describe('performLazySelection', () => {
         y: { start: 0, stop: 5 }
       });
     });
+
+    test('should compose array selections correctly', async () => {
+      const baseLoader = createMockLoader();
+
+      // First selection: array selection picks indices [1, 2, 3, 4]
+      const params1: LazySelectionParams = {
+        selection: { x: [1, 2, 3, 4] },
+        dims: ['x', 'y'],
+        shape: [10, 5],
+        coords: {
+          x: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+          y: [10, 20, 30, 40, 50]
+        },
+        attrs: {},
+        lazyLoader: baseLoader
+      };
+
+      const result1 = performLazySelection(params1);
+
+      // After first selection, we have coords [1, 2, 3, 4] (4 elements)
+      expect(result1.virtualShape).toEqual([4, 5]);
+      expect(result1.coords.x).toEqual([1, 2, 3, 4]);
+
+      // Second selection: array selection from the result
+      const params2: LazySelectionParams = {
+        selection: { x: [2, 3] }, // Pick coordinate values 2 and 3
+        dims: result1.dims,
+        shape: result1.virtualShape,
+        coords: result1.coords,
+        attrs: result1.attrs,
+        originalIndexMapping: result1.originalIndexMapping,
+        lazyLoader: result1.lazyLoader
+      };
+
+      const result2 = performLazySelection(params2);
+
+      // Final virtual shape should be [2, 5]
+      expect(result2.virtualShape).toEqual([2, 5]);
+      expect(result2.coords.x).toEqual([2, 3]);
+
+      // Request the data
+      await result2.lazyLoader({ x: { start: 0, stop: 2 }, y: { start: 0, stop: 5 } });
+
+      // Should map to original indices 2-4 (coordinates 2 and 3 are at original indices 2-3)
+      expect(baseLoader).toHaveBeenCalledWith({
+        x: { start: 2, stop: 4 },
+        y: { start: 0, stop: 5 }
+      });
+    });
+
+    test('should compose slice on array selection', async () => {
+      const baseLoader = createMockLoader();
+
+      // First selection: array selection
+      const params1: LazySelectionParams = {
+        selection: { x: [10, 20, 30, 40, 50] },
+        dims: ['x'],
+        shape: [10],
+        coords: {
+          x: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]
+        },
+        attrs: {},
+        lazyLoader: baseLoader
+      };
+
+      const result1 = performLazySelection(params1);
+      expect(result1.coords.x).toEqual([10, 20, 30, 40, 50]);
+
+      // Second selection: slice on the array result
+      const params2: LazySelectionParams = {
+        selection: { x: { start: 20, stop: 40 } },
+        dims: result1.dims,
+        shape: result1.virtualShape,
+        coords: result1.coords,
+        attrs: result1.attrs,
+        originalIndexMapping: result1.originalIndexMapping,
+        lazyLoader: result1.lazyLoader
+      };
+
+      const result2 = performLazySelection(params2);
+
+      expect(result2.virtualShape).toEqual([3]);
+      expect(result2.coords.x).toEqual([20, 30, 40]);
+
+      // Request the data
+      await result2.lazyLoader({ x: { start: 0, stop: 3 } });
+
+      // Should map to original indices 2-5 (coords [20,30,40] are at original indices 2,3,4)
+      expect(baseLoader).toHaveBeenCalledWith({
+        x: { start: 2, stop: 5 }
+      });
+    });
+
+    test('should compose array on slice selection', async () => {
+      const baseLoader = createMockLoader();
+
+      // First selection: slice
+      const params1: LazySelectionParams = {
+        selection: { x: { start: 1, stop: 5 } },
+        dims: ['x'],
+        shape: [10],
+        coords: {
+          x: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        },
+        attrs: {},
+        lazyLoader: baseLoader
+      };
+
+      const result1 = performLazySelection(params1);
+      expect(result1.coords.x).toEqual([1, 2, 3, 4, 5]);
+
+      // Second selection: array on the slice result
+      const params2: LazySelectionParams = {
+        selection: { x: [2, 4] },
+        dims: result1.dims,
+        shape: result1.virtualShape,
+        coords: result1.coords,
+        attrs: result1.attrs,
+        originalIndexMapping: result1.originalIndexMapping,
+        lazyLoader: result1.lazyLoader
+      };
+
+      const result2 = performLazySelection(params2);
+
+      expect(result2.virtualShape).toEqual([3]); // Array min=2, max=4, so indices 1-3 in result1
+      expect(result2.coords.x).toEqual([2, 3, 4]);
+
+      // Request the data
+      await result2.lazyLoader({ x: { start: 0, stop: 3 } });
+
+      // Coords [2,3,4] are at virtual indices [1,2,3] in result1,
+      // which map to original indices [2,3,4]
+      expect(baseLoader).toHaveBeenCalledWith({
+        x: { start: 2, stop: 5 }
+      });
+    });
   });
 
   describe('edge cases', () => {

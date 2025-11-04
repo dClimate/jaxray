@@ -89,7 +89,12 @@ export type SelectionMethod = 'nearest' | 'ffill' | 'bfill' | 'pad' | 'backfill'
  * Selection specification for indexing
  */
 export type Selection = {
-  [dimension: string]: number | number[] | CoordinateValue | CoordinateValue[] | { start?: CoordinateValue; stop?: CoordinateValue; step?: number };
+  [dimension: string]:
+    | number
+    | number[]
+    | CoordinateValue
+    | CoordinateValue[]
+    | { start?: CoordinateValue; stop?: CoordinateValue };
 };
 
 /**

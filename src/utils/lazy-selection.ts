@@ -3,7 +3,15 @@
  * Handles selection operations on lazy-loaded arrays without materializing the entire dataset
  */
 
-import { Selection, DimensionName, Coordinates, SelectionOptions, LazyIndexRange, Attributes } from '../types.js';
+import {
+  Selection,
+  DimensionName,
+  Coordinates,
+  SelectionOptions,
+  LazyIndexRange,
+  Attributes,
+  CoordinateValue
+} from '../types.js';
 import { deepClone } from '../utils.js';
 import { findCoordinateIndex } from './coordinate-indexing.js';
 
@@ -143,8 +151,8 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       newCoords[dim] = coords[dim].slice(minIdx, maxIdx + 1);
       newOriginalIndexMapping[dim] = mapping;
       parentIndexMapping[dim] = parentMapping;
-    } else if (typeof sel === 'object' && ('start' in sel || 'stop' in sel)) {
-      const { start, stop } = sel;
+    } else if (sel && typeof sel === 'object' && ('start' in sel || 'stop' in sel)) {
+      const { start, stop } = sel as { start?: CoordinateValue; stop?: CoordinateValue };
       const startIndex = start !== undefined ?
         findCoordinateIndex(coords[dim], start, options, dim, dimAttrs) : 0;
       const stopIndex = stop !== undefined ?

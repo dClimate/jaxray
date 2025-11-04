@@ -16,9 +16,8 @@ import {
   StreamOptions,
   StreamChunk,
   RollingOptions,
-  LazyIndexRange
 } from './types.js';
-import { getShape, flatten, reshape, deepClone } from './utils.js';
+import { getShape, flatten, deepClone } from './utils.js';
 import {
   createEagerBlock,
   createLazyBlock,

@@ -4,7 +4,7 @@ import {
   LazyLoader,
   LazyIndexRange
 } from '../types.js';
-import { deepClone, getShape, getAtIndex } from '../utils.js';
+import { getShape, getAtIndex } from '../utils.js';
 
 export type DataBlockKind = 'eager' | 'lazy';
 
