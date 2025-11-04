@@ -37,6 +37,7 @@ Working with multi-dimensional labeled data in JavaScript shouldn't be painful. 
 - 🎯 **Smart Selection**: Select by labels with nearest neighbor, forward/backward fill
 - 🌊 **Streaming**: Process massive datasets chunk-by-chunk with progress tracking
 - 📦 **Zarr Support**: Read sharded Zarr stores directly from IPFS
+- 🔐 **Encryption**: Transparent XChaCha20-Poly1305 authenticated encryption for Zarr datasets
 - 🔒 **Type-Safe**: Full TypeScript support with complete type definitions
 - 💨 **Memory Efficient**: Stream large selections without loading everything
 - 🔄 **Immutable**: All operations return new instances
@@ -179,6 +180,93 @@ await openIpfsStore(cid, { gatewayUrl: 'https://ipfs.my-org.dev' });
 const customElements = createIpfsElements('https://ipfs.my-org.dev');
 const { type, store } = await openIpfsStore(cid, { ipfsElements: customElements });
 ```
+
+### Encryption and Decryption
+
+jaxray supports transparent encryption and decryption of Zarr datasets using XChaCha20-Poly1305 authenticated encryption. This provides both confidentiality and integrity protection for your data.
+
+#### Registering the Encryption Codec
+
+Before opening encrypted datasets, register the encryption codec with your key management:
+
+```typescript
+import { registerXChaCha20Poly1305Codec } from 'jaxray';
+
+// Register with a hex-encoded 256-bit key
+registerXChaCha20Poly1305Codec({
+  getKey: () => '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+  // Optional: customize nonce generation (defaults to crypto.getRandomValues)
+  // nonceGenerator: () => crypto.getRandomValues(new Uint8Array(24))
+});
+```
+
+**Key Management Best Practices:**
+- 🔑 **Key Generation**: Use cryptographically secure random number generators to create 256-bit (32 byte) keys
+- 🔒 **Key Storage**: Store keys securely using environment variables, key management services (KMS), or secure enclaves
+- 🎲 **Nonce Generation**: The default nonce generator uses `crypto.getRandomValues()` for secure randomness. Each encryption operation automatically generates a fresh nonce
+- ⚠️ **Never reuse nonces** with the same key - the implementation handles this automatically
+
+#### Opening Encrypted Datasets
+
+Once the codec is registered, encrypted datasets can be opened transparently:
+
+```typescript
+import { ZarrBackend } from 'jaxray';
+
+// Open an encrypted Zarr store
+const dataset = await ZarrBackend.open(encryptedStore);
+
+// Check if the dataset is encrypted
+console.log(dataset.isEncrypted); // true
+
+// Access data - decryption happens automatically
+const variable = dataset.getVariable('temperature');
+const data = await variable.compute();
+console.log(data.data); // Decrypted values
+```
+
+#### Encryption Detection
+
+jaxray automatically detects encrypted datasets by inspecting the Zarr metadata for XChaCha20-Poly1305 codecs:
+
+```typescript
+const dataset = await ZarrBackend.open(store);
+
+if (dataset.isEncrypted) {
+  console.log('Dataset contains encrypted variables');
+  // Ensure codec is registered with correct key
+}
+```
+
+#### How It Works
+
+1. **Encryption**: When data is written, each chunk is encrypted with a randomly generated 24-byte nonce. The nonce is prepended to the ciphertext (first 24 bytes)
+2. **Decryption**: When reading, the nonce is extracted from the chunk, and the data is decrypted and authenticated
+3. **Authentication**: XChaCha20-Poly1305 includes a 16-byte authentication tag that protects against tampering. Decryption will fail if the data has been modified or if the wrong key is used
+
+#### Error Handling
+
+If decryption fails (wrong key, corrupted data, or tampering detected), an error will be thrown:
+
+```typescript
+try {
+  const data = await variable.compute();
+} catch (error) {
+  if (error.message.match(/tag|auth/i)) {
+    console.error('Decryption failed: Invalid key or corrupted data');
+  }
+}
+```
+
+#### Security Considerations
+
+- ✅ **Authenticated Encryption**: XChaCha20-Poly1305 provides both confidentiality and integrity
+- ✅ **Unique Nonces**: Each encryption operation uses a fresh random nonce
+- ✅ **Extended Nonce**: XChaCha20 uses 192-bit nonces, eliminating collision concerns
+- ⚠️ **Key Protection**: The security depends entirely on keeping your encryption keys secret
+- ⚠️ **Metadata**: Zarr metadata (array shapes, dimension names, etc.) is not encrypted
+
+See the [xchacha20poly1305 example](examples/xchacha20poly1305.ts) for a complete working example.
 
 ### Streaming Large Datasets
 

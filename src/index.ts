@@ -27,6 +27,11 @@ export type { IPFSELEMENTS_INTERFACE } from './backends/ipfs/ipfs-elements.js';
 export { openIpfsStore, detectIpfsStoreType } from './backends/ipfs/open-store.js';
 export type { OpenStoreOptions } from './backends/ipfs/open-store.js';
 export { KuboCAS } from './backends/ipfs/ipfs-gateway.js';
+export {
+  registerXChaCha20Poly1305Codec,
+  XCHACHA20POLY1305_CODEC_ID,
+  type CodecRegistrationOptions
+} from './backends/zarrita-codecs/xchacha20poly1305.js';
 
 // Version
 export const VERSION = '0.2.1';
