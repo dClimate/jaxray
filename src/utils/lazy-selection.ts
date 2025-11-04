@@ -250,38 +250,18 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       const startPos = requested.start ?? 0;
       const stopPos = requested.stop ?? mapping.length;
 
-      const looksLikeChildSpace =
-        startPos >= 0 &&
-        startPos < mapping.length &&
-        stopPos <= mapping.length &&
-        stopPos >= 0;
+      // All requests to a lazy loader are in child (virtual) space
+      // The mapping translates child indices to parent indices
+      const clampedStart = Math.max(0, Math.min(startPos, mapping.length - 1));
+      const clampedStopIdx = Math.max(
+        clampedStart + 1,
+        Math.min(stopPos, mapping.length)
+      );
 
-      if (looksLikeChildSpace) {
-        const clampedStart = Math.max(0, Math.min(startPos, mapping.length - 1));
-        const clampedStopIdx = Math.max(
-          clampedStart + 1,
-          Math.min(stopPos, mapping.length)
-        );
-
-        resolved[dim] = {
-          start: mapping[clampedStart],
-          stop: mapping[clampedStopIdx - 1] + 1
-        };
-      } else {
-        const clampedStartOriginal = Math.max(
-          minOriginal,
-          Math.min(startPos, maxOriginalExclusive)
-        );
-        const clampedStopOriginal = Math.max(
-          clampedStartOriginal,
-          Math.min(stopPos, maxOriginalExclusive)
-        );
-
-        resolved[dim] = {
-          start: clampedStartOriginal,
-          stop: clampedStopOriginal
-        };
-      }
+      resolved[dim] = {
+        start: mapping[clampedStart],
+        stop: mapping[clampedStopIdx - 1] + 1
+      };
     }
 
     return loader(resolved);
