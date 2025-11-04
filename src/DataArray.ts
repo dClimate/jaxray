@@ -469,18 +469,27 @@ export class DataArray {
 
   /**
    * Select data by integer position
+   * Supports negative indexing (Python-style): -1 = last, -2 = second-to-last, etc.
    */
   async isel(selection: { [dimension: string]: number | number[] }): Promise<DataArray> {
     const indexSelection: Selection = {};
 
     for (const [dim, sel] of Object.entries(selection)) {
+      const coords = this._coords[dim];
+      if (!coords) continue;
+
       if (typeof sel === 'number') {
-        // Convert index to coordinate value
-        const coordValue = this._coords[dim]?.[sel];
+        // Support negative indexing (Python-style: -1 = last, -2 = second-to-last, etc.)
+        const index = sel < 0 ? coords.length + sel : sel;
+        const coordValue = coords[index];
         indexSelection[dim] = coordValue;
       } else if (Array.isArray(sel)) {
-        const coords = sel.map(i => this._coords[dim][i]);
-        indexSelection[dim] = coords;
+        // Support negative indexing in arrays
+        const coordValues = sel.map(i => {
+          const index = i < 0 ? coords.length + i : i;
+          return coords[index];
+        });
+        indexSelection[dim] = coordValues;
       }
     }
 

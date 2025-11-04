@@ -99,6 +99,81 @@ describe('DataArray', () => {
     expect(selected.data).toBe(3);
   });
 
+  test('should support negative indexing in isel() for single values', async () => {
+    const data = [10, 20, 30, 40, 50];
+    const da = new DataArray(data, {
+      dims: ['x'],
+      coords: { x: [0, 1, 2, 3, 4] }
+    });
+
+    // Select last element
+    const last = await da.isel({ x: -1 });
+    expect(last.data).toBe(50);
+
+    // Select second-to-last element
+    const secondLast = await da.isel({ x: -2 });
+    expect(secondLast.data).toBe(40);
+
+    // Select third-to-last element
+    const thirdLast = await da.isel({ x: -3 });
+    expect(thirdLast.data).toBe(30);
+
+    // First element (negative wrap around)
+    const first = await da.isel({ x: -5 });
+    expect(first.data).toBe(10);
+  });
+
+  test('should support negative indexing in isel() for arrays', async () => {
+    const data = [10, 20, 30, 40, 50];
+    const da = new DataArray(data, {
+      dims: ['x'],
+      coords: { x: [0, 1, 2, 3, 4] }
+    });
+
+    // Select first and last
+    const edges = await da.isel({ x: [0, -1] });
+    expect(edges.data).toEqual([10, 50]);
+
+    // Select last three elements
+    const lastThree = await da.isel({ x: [-3, -2, -1] });
+    expect(lastThree.data).toEqual([30, 40, 50]);
+
+    // Mix positive and negative indices
+    const mixed = await da.isel({ x: [0, -2, 2] });
+    expect(mixed.data).toEqual([10, 40, 30]);
+  });
+
+  test('should support negative indexing in isel() for 2D arrays', async () => {
+    const data = [
+      [1, 2, 3],
+      [4, 5, 6],
+      [7, 8, 9]
+    ];
+    const da = new DataArray(data, {
+      dims: ['y', 'x'],
+      coords: {
+        y: [0, 1, 2],
+        x: [0, 1, 2]
+      }
+    });
+
+    // Select last row
+    const lastRow = await da.isel({ y: -1 });
+    expect(lastRow.data).toEqual([7, 8, 9]);
+
+    // Select last column
+    const lastCol = await da.isel({ x: -1 });
+    expect(lastCol.data).toEqual([3, 6, 9]);
+
+    // Select bottom-right corner
+    const corner = await da.isel({ y: -1, x: -1 });
+    expect(corner.data).toBe(9);
+
+    // Select first row, last column
+    const topRight = await da.isel({ y: 0, x: -1 });
+    expect(topRight.data).toBe(3);
+  });
+
   test('should compute sum along dimension', () => {
     const data = [
       [1, 2, 3],
