@@ -2,7 +2,7 @@
   <img src="logo.png" alt="jaxray logo" width="300"/>
   <p><strong>Labeled multi-dimensional arrays for JavaScript</strong></p>
 
-  [![npm version](https://img.shields.io/npm/v/jaxray?style=flat-square)](https://www.npmjs.com/package/jaxray)
+  [![npm version](https://img.shields.io/npm/v/@dclimate/jaxray?style=flat-square)](https://www.npmjs.com/package/@dclimate/jaxray)
   ![Coverage](https://img.shields.io/badge/coverage-80%25-yellow?style=flat-square)
   [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
   [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
