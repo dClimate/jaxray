@@ -72,7 +72,7 @@ describe('Dataset.open_zarr with IPFS', () => {
 
     const ds = await Dataset.open_zarr(store);
     // Query some data
-    expect(ds.coords['forecast_reference_time'][0]).toBeInstanceOf(Date);
+    expect(ds.coords['forecast_reference_time'][0]).toBeTypeOf('string');
 
     const dataArray = ds.getVariable('AIFS Ensemble 2m Temperature');
 

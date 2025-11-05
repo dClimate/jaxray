@@ -23,10 +23,10 @@ function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | u
     if (units) {
       return normalized.map((value) => {
         if (typeof value === "number") {
-          const date = cfTimeToDate(value, units, calendar);
+          const date = cfTimeToDate(value, units, calendar)?.toISOString();
           return date ?? value;
         }
-        return value;
+        return value.toISOString();
       });
     }
   }

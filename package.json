@@ -1,6 +1,6 @@
 {
   "name": "@dclimate/jaxray",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "A javascript implementation similar to xarray",
   "type": "module",
   "main": "dist/index.js",

@@ -932,6 +932,10 @@ export class DataArray {
         const dim = this._dims[d];
         const coordIndex = indices[d];
         let coordValue = this._coords[dim][coordIndex];
+        // check if coordValue is a Date object
+        if (coordValue instanceof Date) {
+          coordValue = coordValue.toISOString();
+        }
 
         // Convert time coordinates to datetime strings
         if (timeCoordInfo[dim] && typeof coordValue === 'number') {
