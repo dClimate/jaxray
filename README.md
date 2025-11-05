@@ -45,7 +45,7 @@ Working with multi-dimensional labeled data in JavaScript shouldn't be painful. 
 ## Installation
 
 ```bash
-npm install jaxray
+npm install @dclimate/jaxray
 ```
 
 ## Quick Start
@@ -53,7 +53,7 @@ npm install jaxray
 ### Creating a DataArray
 
 ```typescript
-import { DataArray } from 'jaxray';
+import { DataArray } from '@dclimate/jaxray';
 
 // Simple 1D array with labeled coordinates
 const temperatures = new DataArray([20, 22, 25, 23, 21], {
@@ -149,7 +149,7 @@ await data.sel({ x: 13 }, { method: 'nearest', tolerance: 2 });
 jaxray can auto-detect whether a CID points to a sharded Zarr store or a HAMT-backed one. All you need is the CID:
 
 ```typescript
-import { Dataset, openIpfsStore } from 'jaxray';
+import { Dataset, openIpfsStore } from '@dclimate/jaxray';
 
 const cid = 'bafy…';
 
@@ -173,7 +173,7 @@ console.log(snapshot.getVariable('temperature').values);
 The helper uses dClimate's public gateway by default. Provide your own gateway or custom IPFS primitives when needed:
 
 ```typescript
-import { createIpfsElements, openIpfsStore } from 'jaxray';
+import { createIpfsElements, openIpfsStore } from '@dclimate/jaxray';
 
 await openIpfsStore(cid, { gatewayUrl: 'https://ipfs.my-org.dev' });
 // or reuse your own IPFS primitives
@@ -190,7 +190,7 @@ jaxray supports transparent encryption and decryption of Zarr datasets using XCh
 Before opening encrypted datasets, register the encryption codec with your key management:
 
 ```typescript
-import { registerXChaCha20Poly1305Codec } from 'jaxray';
+import { registerXChaCha20Poly1305Codec } from '@dclimate/jaxray';
 
 // Register with a hex-encoded 256-bit key
 registerXChaCha20Poly1305Codec({
@@ -211,7 +211,7 @@ registerXChaCha20Poly1305Codec({
 Once the codec is registered, encrypted datasets can be opened transparently:
 
 ```typescript
-import { ZarrBackend } from 'jaxray';
+import { ZarrBackend } from '@dclimate/jaxray';
 
 // Open an encrypted Zarr store
 const dataset = await ZarrBackend.open(encryptedStore);
@@ -329,7 +329,7 @@ console.log(rowSums.data); // [6, 15]
 ### Working with Datasets
 
 ```typescript
-import { DataArray, Dataset } from 'jaxray';
+import { DataArray, Dataset } from '@dclimate/jaxray';
 
 // Create multiple related DataArrays
 const temp = new DataArray(
