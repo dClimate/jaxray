@@ -4,7 +4,7 @@
 
   [![npm version](https://img.shields.io/npm/v/jaxray?style=flat-square)](https://www.npmjs.com/package/jaxray)
   ![Coverage](https://img.shields.io/badge/coverage-80%25-yellow?style=flat-square)
-  [![License](https://img.shields.io/badge/license-ISC-blue.svg?style=flat-square)](LICENSE)
+  [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
   [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
 
   <p>A JavaScript/TypeScript implementation inspired by Python's <a href="https://xarray.pydata.org/">xarray</a> library</p>
@@ -732,7 +732,7 @@ npm test
 
 ## License
 
-ISC
+MIT
 
 ## Contributing
 
