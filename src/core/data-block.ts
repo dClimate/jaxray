@@ -61,10 +61,10 @@ export function createLazyBlock(
     kind: 'lazy',
     shape: normalizedShape,
     materialize(): NDArray {
-      throw new Error('Materializing a lazy DataBlock requires an explicit execution step.');
+      throw new Error('Materializing a lazy DataBlock requires an explicit execution step. Try running .compute() on it first');
     },
     getValue(): DataValue {
-      throw new Error('Random access on a lazy DataBlock requires explicit execution.');
+      throw new Error('Random access on a lazy DataBlock requires explicit execution. Try running .compute() on it first');
     },
     clone(): DataBlock {
       return createLazyBlock(normalizedShape, loader);
