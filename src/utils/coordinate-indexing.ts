@@ -163,10 +163,13 @@ export function findCoordinateIndex(
 
       return index;
     }
+
+    // Not evenly spaced but we have numeric coords - use fallback with numeric arrays
+    return findIndexFallback(numericCoords, numericValue, method, tolerance, dim);
   }
 
-  // Fallback to linear search for non-evenly-spaced or non-numeric coordinates
-  return findIndexFallback(coords, numericValue, method, tolerance, dim);
+  // Fallback to linear search for non-numeric coordinates
+  return findIndexFallback(coords, value, method, tolerance, dim);
 }
 
 /**
