@@ -14,6 +14,7 @@ import {
 } from '../types.js';
 import { deepClone } from '../utils.js';
 import { findCoordinateIndex } from './coordinate-indexing.js';
+import { selectMultipleAtDimension } from './data-operations.js';
 
 /**
  * Map a current index to the original index in the source dataset.
@@ -82,6 +83,9 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
   const newCoords: Coordinates = {};
   const newOriginalIndexMapping: { [dim: string]: number[] } = {};
   const parentIndexMapping: { [dim: string]: number[] } = {}; // Maps to parent virtual space
+  // Track which dimensions use discrete (non-contiguous) index selection.
+  // After the loader fetches a contiguous range, these dimensions need post-fetch extraction.
+  const discreteSelectionOffsets: { [dim: string]: number[] } = {};
 
   // Get coordinate attributes for time conversion
   const coordAttrs = (attrs as any)?._coordAttrs;
@@ -125,32 +129,34 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       indexRanges[dim] = originalIndex;
       fixedOriginalIndices[dim] = originalIndex;
     } else if (Array.isArray(sel)) {
+      // xarray-compatible: array selection picks discrete points, not a contiguous range.
       const indices = sel.map(v =>
         findCoordinateIndex(coords[dim], v, options, dim, dimAttrs)
       );
-      const minIdx = Math.min(...indices);
-      const maxIdx = Math.max(...indices);
 
-      // Parent mapping: indices in parent virtual space
-      const parentMapping = Array.from(
-        { length: maxIdx - minIdx + 1 },
-        (_, j) => minIdx + j
-      );
+      // Parent mapping: only the exact requested indices (discrete, possibly non-contiguous)
+      const parentMapping = indices;
 
       // Original mapping: map through to original space
       const mapping = parentMapping.map(parentIdx =>
         mapIndexToOriginal(originalIndexMapping, dim, parentIdx)
       );
 
+      // The loader still needs a contiguous range; we'll extract discrete points after fetch
+      const minIdx = Math.min(...indices);
+      const maxIdx = Math.max(...indices);
       indexRanges[dim] = {
-        start: parentMapping[0],
-        stop: parentMapping[parentMapping.length - 1] + 1
+        start: minIdx,
+        stop: maxIdx + 1
       };
 
       newDims.push(dim);
-      newCoords[dim] = coords[dim].slice(minIdx, maxIdx + 1);
+      // Only include coordinates for the exact requested points
+      newCoords[dim] = indices.map(idx => coords[dim][idx]);
       newOriginalIndexMapping[dim] = mapping;
       parentIndexMapping[dim] = parentMapping;
+      // Store offsets relative to the contiguous fetch range so we can extract discrete points
+      discreteSelectionOffsets[dim] = indices.map(idx => idx - minIdx);
     } else if (sel && typeof sel === 'object' && ('start' in sel || 'stop' in sel)) {
       const { start, stop } = sel as { start?: CoordinateValue; stop?: CoordinateValue };
       const startIndex = start !== undefined ?
@@ -272,7 +278,25 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       };
     }
 
-    return loader(resolved);
+    let result = await loader(resolved);
+
+    // For dimensions with discrete (non-contiguous) array selections, the loader
+    // returned a contiguous range. Extract only the exact requested indices.
+    // Process in reverse dim order so earlier extractions don't shift later dim positions.
+    const resultDims = newDims;
+    for (let d = resultDims.length - 1; d >= 0; d--) {
+      const dim = resultDims[d];
+      const offsets = discreteSelectionOffsets[dim];
+      if (!offsets) continue;
+
+      // Check if offsets are already contiguous (no extraction needed)
+      const isContiguous = offsets.every((v, i) => i === 0 || v === offsets[i - 1] + 1);
+      if (isContiguous && offsets.length === (Math.max(...offsets) - Math.min(...offsets) + 1)) continue;
+
+      result = selectMultipleAtDimension(result, d, offsets);
+    }
+
+    return result;
   };
 
   return {

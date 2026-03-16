@@ -230,8 +230,8 @@ describe('performLazySelection', () => {
 
       const result = performLazySelection(params);
 
-      // Array selection creates mapping from min to max index (1 to 4)
-      expect(result.originalIndexMapping.x).toEqual([1, 2, 3, 4]);
+      // Array selection picks only the exact requested indices (xarray-compatible)
+      expect(result.originalIndexMapping.x).toEqual([1, 3, 4]);
     });
 
     test('should handle non-contiguous array selections', () => {
@@ -247,9 +247,9 @@ describe('performLazySelection', () => {
 
       const result = performLazySelection(params);
 
-      // Array selection creates mapping from min to max index (0 to 4)
-      expect(result.originalIndexMapping.x).toEqual([0, 1, 2, 3, 4]);
-      expect(result.coords.x).toEqual([0, 10, 20, 30, 40]);
+      // Array selection picks only the exact requested indices (xarray-compatible)
+      expect(result.originalIndexMapping.x).toEqual([0, 2, 4]);
+      expect(result.coords.x).toEqual([0, 20, 40]);
     });
   });
 
@@ -548,9 +548,9 @@ describe('performLazySelection', () => {
       const result = performLazySelection(params);
 
       expect(result.dims).toEqual(['y', 'z']);
-      expect(result.virtualShape).toEqual([2, 3]); // y has 2 elements (200, 300), z has full range 0-2
+      expect(result.virtualShape).toEqual([2, 2]); // y has 2 elements (200, 300), z has 2 discrete points
       expect(result.coords.y).toEqual([200, 300]);
-      expect(result.coords.z).toEqual([1000, 2000, 3000]); // Array selection includes full min-max range
+      expect(result.coords.z).toEqual([1000, 3000]); // Array selection picks exact points (xarray-compatible)
     });
 
     test('should compose multiple lazy selections correctly', async () => {
@@ -723,14 +723,15 @@ describe('performLazySelection', () => {
 
       const result2 = performLazySelection(params2);
 
-      expect(result2.virtualShape).toEqual([3]); // Array min=2, max=4, so indices 1-3 in result1
-      expect(result2.coords.x).toEqual([2, 3, 4]);
+      expect(result2.virtualShape).toEqual([2]); // Discrete points [2, 4] (xarray-compatible)
+      expect(result2.coords.x).toEqual([2, 4]);
 
       // Request the data
-      await result2.lazyLoader({ x: { start: 0, stop: 3 } });
+      await result2.lazyLoader({ x: { start: 0, stop: 2 } });
 
-      // Coords [2,3,4] are at virtual indices [1,2,3] in result1,
-      // which map to original indices [2,3,4]
+      // Coords [2,4] are at virtual indices [1,3] in result1,
+      // which map to original indices [2,4].
+      // Loader fetches contiguous range [2,5), then discrete extraction picks [0,2] offsets.
       expect(baseLoader).toHaveBeenCalledWith({
         x: { start: 2, stop: 5 }
       });

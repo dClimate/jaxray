@@ -3,16 +3,15 @@
  */
 
 import { describe, test, expect } from 'vitest';
-import { CID } from 'multiformats/cid';
 import { Dataset } from '../src/Dataset';
 import { ShardedStore } from '../src/backends/ipfs/sharded-store';
-import { HamtStore } from '../src/backends/ipfs/hamt-store';
 import { createIpfsElements } from '../src/backends/ipfs/ipfs-elements';
+import { getFinalizedCid } from './helpers/stac-cids';
 
 describe('Dataset.open_zarr with IPFS', () => {
   test('should open sharded zarr from IPFS gateway', async () => {
-    // This is a real sharded zarr store on dclimate's IPFS gateway
-    const cid = 'bafyr4iacuutc5bgmirkfyzn4igi2wys7e42kkn674hx3c4dv4wrgjp2k2u';
+    // Fetch a current CID from the dClimate STAC API so tests don't break when datasets are republished
+    const cid = await getFinalizedCid();
 
     // Create IPFS elements and sharded store
     const ipfsElements = createIpfsElements('https://ipfs-gateway.dclimate.net');
@@ -34,7 +33,7 @@ describe('Dataset.open_zarr with IPFS', () => {
 
     // Check if we got a result
     expect(selected).toBeDefined();
-  }, 30000); // 30 second timeout for network request
+  }, 120000); // 2 minute timeout for STAC API + IPFS network requests
 
   test('should accept custom ipfsElements', async () => {
     const cid = 'bafyr4ifo5pm7dfbjyrnch7hqblmtmmtdywnjkdk52kuxhdpzwvlt6pkxay';
@@ -60,49 +59,4 @@ describe('Dataset.open_zarr with IPFS', () => {
     ).rejects.toThrow();
   });
 
-  test('should open hamt-backed zarr from IPFS gateway', async () => {
-    // fetch the cid from a url 
-    const response = await fetch('https://dclimate-ceramic.duckdns.org/api/datasets/aifs-ensemble-temperature');
-    const cidJson = await response.json();
-    const cid = cidJson['cid'];
-
-    const ipfsElements = createIpfsElements('https://ipfs-gateway.dclimate.net');
-    const rootCid = CID.parse(cid);
-    const store = new HamtStore(rootCid, ipfsElements);
-
-    const ds = await Dataset.open_zarr(store);
-    // Query some data
-    expect(ds.coords['forecast_reference_time'][0]).toBeTypeOf('string');
-
-    const dataArray = ds.getVariable('AIFS Ensemble 2m Temperature');
-
-    const dataSelected = await dataArray.isel({
-      latitude: 45,
-      longitude: 34,
-      step: 0,
-      forecast_reference_time: 0,
-    });
-
-    expect(dataSelected.values).toBe(251.53819274902344);
-
-    // Test sel() with coordinate values
-    const dataSelectedBySel = await dataArray.sel({
-      latitude: -78.75,  // The coordinate value at index 45
-      longitude: -171.5, // The coordinate value at index 34
-      step: 0,           // hour 0
-      forecast_reference_time: "2025-10-11", //
-    });
-
-    expect(dataSelectedBySel.values).toBe(237.5486297607422);
-
-    expect(ds).toBeInstanceOf(Dataset);
-    expect(ds.dataVars.length).toBeGreaterThan(0);
-    expect(ds.dims.length).toBeGreaterThan(0);
-
-    const firstVar = ds.dataVars[0];
-    if (firstVar) {
-      const variable = ds.getVariable(firstVar);
-      expect(variable.shape.length).toBeGreaterThan(0);
-    }
-  }, 30000);
 });

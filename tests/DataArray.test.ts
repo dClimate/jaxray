@@ -643,7 +643,7 @@ describe('DataArray', () => {
 
       await expect(
         da.sel({ x: 'x' }, { method: 'nearest' })
-      ).rejects.toThrow('Nearest neighbor lookup requires numeric coordinates');
+      ).rejects.toThrow('Nearest neighbor lookup requires numeric or Date coordinates');
     });
 
     test('should work with array selections using method', async () => {
@@ -700,6 +700,85 @@ describe('DataArray', () => {
       await expect(
         da.sel({ x: 13 }, { method: 'bfill', tolerance: 5 })
       ).rejects.toThrow('No coordinate within tolerance');
+    });
+  });
+
+  describe('Date coordinate sel()', () => {
+    // Simulate how zarr backend stores time coords: as ISO strings
+    const isoCoords = [
+      '2002-01-01T00:00:00.000Z',
+      '2002-01-11T00:00:00.000Z',
+      '2002-01-21T00:00:00.000Z',
+      '2002-02-01T00:00:00.000Z',
+      '2002-02-11T00:00:00.000Z',
+      '2002-02-21T00:00:00.000Z',
+      '2002-03-01T00:00:00.000Z',
+    ];
+
+    test('sel() with single Date value against ISO string coords', async () => {
+      const data = [10, 20, 30, 40, 50, 60, 70];
+      const da = new DataArray(data, {
+        dims: ['time'],
+        coords: { time: isoCoords },
+      });
+      const selected = await da.sel({ time: new Date('2002-02-11T00:00:00.000Z') });
+      expect(selected.data).toBe(50);
+      expect(selected.dims).toEqual([]); // dimension should be dropped
+    });
+
+    test('sel() with Date range (start/stop) against ISO string coords', async () => {
+      const data = [10, 20, 30, 40, 50, 60, 70];
+      const da = new DataArray(data, {
+        dims: ['time'],
+        coords: { time: isoCoords },
+      });
+      const selected = await da.sel({
+        time: {
+          start: new Date('2002-01-21T00:00:00.000Z'),
+          stop: new Date('2002-02-21T00:00:00.000Z'),
+        },
+      });
+      expect(selected.data).toEqual([30, 40, 50, 60]);
+      expect(selected.dims).toEqual(['time']);
+    });
+
+    test('sel() nearest with Date value against ISO string coords', async () => {
+      const data = [10, 20, 30, 40, 50, 60, 70];
+      const da = new DataArray(data, {
+        dims: ['time'],
+        coords: { time: isoCoords },
+      });
+      const selected = await da.sel(
+        { time: new Date('2002-02-15T00:00:00.000Z') },
+        { method: 'nearest' }
+      );
+      expect(selected.data).toBe(50); // 2002-02-11 is nearest
+    });
+
+    test('sel() ffill with Date value against ISO string coords', async () => {
+      const data = [10, 20, 30, 40, 50, 60, 70];
+      const da = new DataArray(data, {
+        dims: ['time'],
+        coords: { time: isoCoords },
+      });
+      const selected = await da.sel(
+        { time: new Date('2002-02-15T00:00:00.000Z') },
+        { method: 'ffill' }
+      );
+      expect(selected.data).toBe(50); // 2002-02-11 is last value <= target
+    });
+
+    test('sel() bfill with Date value against ISO string coords', async () => {
+      const data = [10, 20, 30, 40, 50, 60, 70];
+      const da = new DataArray(data, {
+        dims: ['time'],
+        coords: { time: isoCoords },
+      });
+      const selected = await da.sel(
+        { time: new Date('2002-02-15T00:00:00.000Z') },
+        { method: 'bfill' }
+      );
+      expect(selected.data).toBe(60); // 2002-02-21 is first value >= target
     });
   });
 });

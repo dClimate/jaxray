@@ -4,15 +4,17 @@
 
 import { CID } from "multiformats/cid";
 import { Dataset, HamtStore, ShardedStore, createIpfsElements, openIpfsStore } from "../src";
+import { getFinalizedCid } from "../tests/helpers/stac-cids";
 
 const GATEWAY_URL = "https://ipfs-gateway.dclimate.net";
-const SHARDED_CID = "bafyr4iacuutc5bgmirkfyzn4igi2wys7e42kkn674hx3c4dv4wrgjp2k2u";
+// HAMT CID is used for the HAMT example — update if this goes stale
 const HAMT_CID = "bafyr4ihpa7gtcpdmcuoqvdde6x2dll6maskygcbruplqe525ptfpybdh7i";
 
 async function openShardedDataset() {
     console.log("=== Sharded Zarr via IPFS Gateway ===");
+    const shardedCid = await getFinalizedCid();
     const ipfsElements = createIpfsElements(GATEWAY_URL);
-    const store = await ShardedStore.open(SHARDED_CID, ipfsElements);
+    const store = await ShardedStore.open(shardedCid, ipfsElements);
     const dataset = await Dataset.open_zarr(store);
 
     console.log("Variables:", dataset.dataVars);

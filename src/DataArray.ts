@@ -313,7 +313,7 @@ export class DataArray {
     for (const dim of this._dims) {
       if (selection[dim] !== undefined) {
         const sel = selection[dim];
-        if (typeof sel === 'number' || typeof sel === 'string') {
+        if (typeof sel === 'number' || typeof sel === 'string' || typeof sel === 'bigint' || sel instanceof Date) {
           // Single value selection - dimension is dropped
           continue;
         }
@@ -1367,8 +1367,22 @@ export class DataArray {
 
   private _getCoordinateSlice(dim: DimensionName, start?: CoordinateValue, stop?: CoordinateValue): CoordinateValue[] {
     const coords = this._coords[dim];
-    const startIndex = start !== undefined ? coords.indexOf(start) : 0;
-    const stopIndex = stop !== undefined ? coords.indexOf(stop) + 1 : coords.length;
+
+    const findIndex = (val: CoordinateValue): number => {
+      if (val instanceof Date) {
+        const iso = val.toISOString();
+        const idx = coords.findIndex(c =>
+          c instanceof Date ? c.getTime() === val.getTime() :
+          typeof c === 'string' ? c === iso :
+          false
+        );
+        return idx;
+      }
+      return coords.indexOf(val);
+    };
+
+    const startIndex = start !== undefined ? findIndex(start) : 0;
+    const stopIndex = stop !== undefined ? findIndex(stop) + 1 : coords.length;
     return coords.slice(startIndex, stopIndex);
   }
 

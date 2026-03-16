@@ -187,7 +187,7 @@ describe('findNearestIndex', () => {
   test('should throw error for non-numeric coordinates', () => {
     const coords = ['a', 'b', 'c'] as any;
     expect(() => findNearestIndex(coords, 'b' as any))
-      .toThrow(/numeric coordinates/);
+      .toThrow(/numeric or Date coordinates/);
   });
 
   test('should use binary search for large sorted arrays', () => {
@@ -227,7 +227,7 @@ describe('findFfillIndex', () => {
   test('should throw error for non-numeric coordinates', () => {
     const coords = ['a', 'b', 'c'] as any;
     expect(() => findFfillIndex(coords, 'b' as any))
-      .toThrow(/numeric coordinates/);
+      .toThrow(/numeric or Date coordinates/);
   });
 });
 
@@ -260,7 +260,7 @@ describe('findBfillIndex', () => {
   test('should throw error for non-numeric coordinates', () => {
     const coords = ['a', 'b', 'c'] as any;
     expect(() => findBfillIndex(coords, 'b' as any))
-      .toThrow(/numeric coordinates/);
+      .toThrow(/numeric or Date coordinates/);
   });
 });
 
@@ -378,6 +378,85 @@ describe('binarySearchBfill', () => {
   test('should handle edge at end', () => {
     const coords = [10, 20, 30, 40];
     expect(binarySearchBfill(coords, 40, true)).toBe(3);
+  });
+});
+
+describe('Date coordinate support', () => {
+  // ISO string coords (as stored by normalizeCoordinateValues for time dimensions)
+  const isoCoords = [
+    '2002-01-01T00:00:00.000Z',
+    '2002-01-11T00:00:00.000Z',
+    '2002-01-21T00:00:00.000Z',
+    '2002-02-01T00:00:00.000Z',
+    '2002-02-11T00:00:00.000Z',
+    '2002-02-21T00:00:00.000Z',
+    '2002-03-01T00:00:00.000Z',
+  ];
+
+  test('findCoordinateIndex: exact match Date against ISO string coords', () => {
+    const date = new Date('2002-02-11T00:00:00.000Z');
+    const index = findCoordinateIndex(isoCoords, date, undefined, 'time');
+    expect(index).toBe(4);
+  });
+
+  test('findCoordinateIndex: exact match Date against ISO string coords (no dimAttrs)', () => {
+    // Without dimAttrs, should still work via Date→ISO fallback
+    const date = new Date('2002-01-21T00:00:00.000Z');
+    const index = findCoordinateIndex(isoCoords, date, undefined, 'time');
+    expect(index).toBe(2);
+  });
+
+  test('findCoordinateIndex: throws for Date not in coords', () => {
+    const date = new Date('2099-01-01T00:00:00.000Z');
+    expect(() => findCoordinateIndex(isoCoords, date, undefined, 'time'))
+      .toThrow(/not found in dimension/);
+  });
+
+  test('findCoordinateIndex: range selection with Date start/stop', () => {
+    const start = new Date('2002-01-21T00:00:00.000Z');
+    const stop = new Date('2002-02-21T00:00:00.000Z');
+    const startIdx = findCoordinateIndex(isoCoords, start, undefined, 'time');
+    const stopIdx = findCoordinateIndex(isoCoords, stop, undefined, 'time');
+    expect(startIdx).toBe(2);
+    expect(stopIdx).toBe(5);
+  });
+
+  test('findNearestIndex: nearest with Date value and ISO string coords', () => {
+    // Date between two coords — should find nearest
+    const date = new Date('2002-02-15T00:00:00.000Z');
+    const index = findNearestIndex(isoCoords, date, undefined, 'time');
+    expect(index).toBe(4); // 2002-02-11 is closer than 2002-02-21
+  });
+
+  test('findNearestIndex: nearest with Date value and Date coords', () => {
+    const dateCoords = isoCoords.map(s => new Date(s));
+    const date = new Date('2002-02-15T00:00:00.000Z');
+    const index = findNearestIndex(dateCoords, date, undefined, 'time');
+    expect(index).toBe(4);
+  });
+
+  test('findFfillIndex: forward fill with Date value and ISO string coords', () => {
+    const date = new Date('2002-02-15T00:00:00.000Z');
+    const index = findFfillIndex(isoCoords, date, undefined, 'time');
+    expect(index).toBe(4); // 2002-02-11 is last value <= target
+  });
+
+  test('findBfillIndex: backward fill with Date value and ISO string coords', () => {
+    const date = new Date('2002-02-15T00:00:00.000Z');
+    const index = findBfillIndex(isoCoords, date, undefined, 'time');
+    expect(index).toBe(5); // 2002-02-21 is first value >= target
+  });
+
+  test('findFfillIndex: exact Date match', () => {
+    const date = new Date('2002-02-11T00:00:00.000Z');
+    const index = findFfillIndex(isoCoords, date, undefined, 'time');
+    expect(index).toBe(4);
+  });
+
+  test('findBfillIndex: exact Date match', () => {
+    const date = new Date('2002-02-11T00:00:00.000Z');
+    const index = findBfillIndex(isoCoords, date, undefined, 'time');
+    expect(index).toBe(4);
   });
 });
 

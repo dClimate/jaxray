@@ -192,6 +192,20 @@ export function findIndexFallback(
   }
 
   // Default exact match
+  // For Date values, compare by ISO string since coords may be stored as ISO strings
+  if (value instanceof Date) {
+    const isoValue = value.toISOString();
+    const index = coords.findIndex(c =>
+      c instanceof Date ? c.getTime() === value.getTime() :
+      typeof c === 'string' ? c === isoValue :
+      false
+    );
+    if (index === -1) {
+      throw new Error(`Coordinate value '${value}' not found in dimension`);
+    }
+    return index;
+  }
+
   const index = coords.indexOf(value);
   if (index === -1) {
     throw new Error(`Coordinate value '${value}' not found in dimension`);
@@ -209,8 +223,48 @@ export function findNearestIndex(
   tolerance?: number,
   dim?: string
 ): number {
+  // Convert Date values and Date/ISO-string coords to numeric (ms) for comparison
+  const numValue = value instanceof Date ? value.getTime() :
+    typeof value === 'string' ? (() => { const d = new Date(value); return Number.isNaN(d.getTime()) ? undefined : d.getTime(); })() :
+    typeof value === 'number' ? value : undefined;
+
+  if (numValue !== undefined) {
+    const numCoords: number[] = [];
+    let allNumeric = true;
+    for (const c of coords) {
+      if (typeof c === 'number') { numCoords.push(c); }
+      else if (c instanceof Date) { numCoords.push(c.getTime()); }
+      else if (typeof c === 'string') {
+        const d = new Date(c);
+        if (!Number.isNaN(d.getTime())) { numCoords.push(d.getTime()); }
+        else { allNumeric = false; break; }
+      } else { allNumeric = false; break; }
+    }
+    if (allNumeric && numCoords.length === coords.length) {
+      // Use numeric comparison
+      if (dim && numCoords.length > 20 && isCoordsSorted(numCoords)) {
+        const ascending = numCoords.length < 2 || numCoords[1] >= numCoords[0];
+        const closestIndex = binarySearchNearest(numCoords, numValue, ascending);
+        if (tolerance !== undefined && Math.abs(numCoords[closestIndex] - numValue) > tolerance) {
+          throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+        }
+        return closestIndex;
+      }
+      let closestIndex = 0;
+      let minDiff = Math.abs(numCoords[0] - numValue);
+      for (let i = 1; i < numCoords.length; i++) {
+        const diff = Math.abs(numCoords[i] - numValue);
+        if (diff < minDiff) { minDiff = diff; closestIndex = i; }
+      }
+      if (tolerance !== undefined && minDiff > tolerance) {
+        throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+      }
+      return closestIndex;
+    }
+  }
+
   if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
-    throw new Error('Nearest neighbor lookup requires numeric coordinates');
+    throw new Error('Nearest neighbor lookup requires numeric or Date coordinates');
   }
 
   const numCoords = coords as number[];
@@ -258,8 +312,14 @@ export function findFfillIndex(
   tolerance?: number,
   dim?: string
 ): number {
+  // Convert Date/string coords to numeric for comparison
+  const { numValue, numCoords: convertedCoords } = toNumericForComparison(value, coords);
+  if (numValue !== undefined && convertedCoords) {
+    return findFfillIndexNumeric(convertedCoords, numValue, tolerance, dim);
+  }
+
   if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
-    throw new Error('Forward fill requires numeric coordinates');
+    throw new Error('Forward fill requires numeric or Date coordinates');
   }
 
   const numCoords = coords as number[];
@@ -318,8 +378,14 @@ export function findBfillIndex(
   tolerance?: number,
   dim?: string
 ): number {
+  // Convert Date/string coords to numeric for comparison
+  const { numValue, numCoords: convertedCoords } = toNumericForComparison(value, coords);
+  if (numValue !== undefined && convertedCoords) {
+    return findBfillIndexNumeric(convertedCoords, numValue, tolerance, dim);
+  }
+
   if (typeof value !== 'number' || !coords.every(c => typeof c === 'number')) {
-    throw new Error('Backward fill requires numeric coordinates');
+    throw new Error('Backward fill requires numeric or Date coordinates');
   }
 
   const numCoords = coords as number[];
@@ -366,6 +432,90 @@ export function findBfillIndex(
     throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
   }
 
+  return firstValidIndex;
+}
+
+/**
+ * Convert a value and coordinate array to numeric (milliseconds) for Date/string comparison.
+ * Returns undefined if conversion is not possible.
+ */
+function toNumericForComparison(
+  value: CoordinateValue,
+  coords: CoordinateValue[]
+): { numValue: number | undefined; numCoords: number[] | undefined } {
+  const numValue = value instanceof Date ? value.getTime() :
+    typeof value === 'string' ? (() => { const d = new Date(value); return Number.isNaN(d.getTime()) ? undefined : d.getTime(); })() :
+    undefined;
+
+  if (numValue === undefined) return { numValue: undefined, numCoords: undefined };
+
+  const numCoords: number[] = [];
+  for (const c of coords) {
+    if (typeof c === 'number') { numCoords.push(c); }
+    else if (c instanceof Date) { numCoords.push(c.getTime()); }
+    else if (typeof c === 'string') {
+      const d = new Date(c);
+      if (!Number.isNaN(d.getTime())) { numCoords.push(d.getTime()); }
+      else { return { numValue: undefined, numCoords: undefined }; }
+    } else { return { numValue: undefined, numCoords: undefined }; }
+  }
+
+  return { numValue, numCoords };
+}
+
+/**
+ * Numeric ffill helper (reuses existing ffill logic for converted Date/string coords)
+ */
+function findFfillIndexNumeric(numCoords: number[], value: number, tolerance?: number, dim?: string): number {
+  if (dim && numCoords.length > 20 && isCoordsSorted(numCoords)) {
+    const ascending = numCoords.length < 2 || numCoords[1] >= numCoords[0];
+    const lastValidIndex = binarySearchFfill(numCoords, value, ascending);
+    if (lastValidIndex === -1) throw new Error(`No coordinate <= ${value} for forward fill`);
+    if (tolerance !== undefined && (value - numCoords[lastValidIndex]) > tolerance) {
+      throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+    }
+    return lastValidIndex;
+  }
+  let lastValidIndex = -1;
+  let minDiff = Infinity;
+  for (let i = 0; i < numCoords.length; i++) {
+    if (numCoords[i] <= value) {
+      const diff = value - numCoords[i];
+      if (diff < minDiff) { minDiff = diff; lastValidIndex = i; }
+    }
+  }
+  if (lastValidIndex === -1) throw new Error(`No coordinate <= ${value} for forward fill`);
+  if (tolerance !== undefined && minDiff > tolerance) {
+    throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+  }
+  return lastValidIndex;
+}
+
+/**
+ * Numeric bfill helper (reuses existing bfill logic for converted Date/string coords)
+ */
+function findBfillIndexNumeric(numCoords: number[], value: number, tolerance?: number, dim?: string): number {
+  if (dim && numCoords.length > 20 && isCoordsSorted(numCoords)) {
+    const ascending = numCoords.length < 2 || numCoords[1] >= numCoords[0];
+    const firstValidIndex = binarySearchBfill(numCoords, value, ascending);
+    if (firstValidIndex === -1) throw new Error(`No coordinate >= ${value} for backward fill`);
+    if (tolerance !== undefined && (numCoords[firstValidIndex] - value) > tolerance) {
+      throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+    }
+    return firstValidIndex;
+  }
+  let firstValidIndex = -1;
+  let minDiff = Infinity;
+  for (let i = 0; i < numCoords.length; i++) {
+    if (numCoords[i] >= value) {
+      const diff = numCoords[i] - value;
+      if (diff < minDiff) { minDiff = diff; firstValidIndex = i; }
+    }
+  }
+  if (firstValidIndex === -1) throw new Error(`No coordinate >= ${value} for backward fill`);
+  if (tolerance !== undefined && minDiff > tolerance) {
+    throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
+  }
   return firstValidIndex;
 }
 

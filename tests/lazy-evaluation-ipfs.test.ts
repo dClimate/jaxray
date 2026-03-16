@@ -9,15 +9,20 @@
  * 5. Lazy data maintains independence between multiple selections
  */
 
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, beforeAll } from 'vitest';
 import { Dataset } from '../src/Dataset';
 import { ShardedStore } from '../src/backends/ipfs/sharded-store';
 import { createIpfsElements } from '../src/backends/ipfs/ipfs-elements';
+import { getFinalizedCid } from './helpers/stac-cids';
 
 describe('Lazy Evaluation with IPFS Datastores', () => {
-  // Real IPFS data source
-  const CID = 'bafyr4iacuutc5bgmirkfyzn4igi2wys7e42kkn674hx3c4dv4wrgjp2k2u';
+  // Fetched from STAC API so tests always use a valid CID
+  let CID: string;
   const GATEWAY = 'https://ipfs-gateway.dclimate.net';
+
+  beforeAll(async () => {
+    CID = await getFinalizedCid();
+  });
 
   /**
    * Test 1: Multiple sequential selections should not load data until compute()
@@ -122,9 +127,9 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
 
     // Select a range
     const rangeSelected = await variable.sel({
-      latitude: [44, 46],
-      longitude: [33, 35],
-      time: ['1987-05-03T23:00:00', '1987-05-05T23:00:00']
+      latitude: { start: 44, stop: 46 },
+      longitude: { start: 33, stop: 35 },
+      time: { start: '1987-05-03T23:00:00', stop: '1987-05-05T23:00:00' }
     });
 
     // The result should be smaller than original
@@ -278,8 +283,8 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
 
     // First, select to ensure we have a manageable subset
     const selected = await ds.sel({
-      latitude: [44, 46],
-      longitude: [33, 35]
+      latitude: { start: 44, stop: 46 },
+      longitude: { start: 33, stop: 35 }
     });
 
     // Check which are lazy before compute
@@ -299,7 +304,7 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
         expect(computed.getVariable(varName).isLazy).toBe(false);
       }
     }
-  }, 120000);
+  }, 300000);
 
   /**
    * Test 9: isel on lazy data should also remain lazy
@@ -322,7 +327,7 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
     });
 
     expect(selected).toBeDefined();
-  }, 30000);
+  }, 120000);
 
   /**
    * Test 10: Verify lazy evaluation doesn't load entire dataset
@@ -427,9 +432,9 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
 
     // Method 1: Direct range selection
     const directRange = await variable.sel({
-      latitude: [48, 52],
-      longitude: [33, 37],
-      time: ['1987-05-18T23:00:00', '1987-05-22T23:00:00']
+      latitude: { start: 48, stop: 52 },
+      longitude: { start: 33, stop: 37 },
+      time: { start: '1987-05-18T23:00:00', stop: '1987-05-22T23:00:00' }
     });
 
     const directRangeData = directRange.isLazy
@@ -438,9 +443,9 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
 
     // Method 2: Chained range selections
     try {
-      const chainedRange1 = await variable.sel({ latitude: [48, 52] });
-      const chainedRange2 = await chainedRange1.sel({ longitude: [33, 37] });
-      const chainedRange3 = await chainedRange2.sel({ time: ['1987-05-18T23:00:00', '1987-05-22T23:00:00'] });
+      const chainedRange1 = await variable.sel({ latitude: { start: 48, stop: 52 } });
+      const chainedRange2 = await chainedRange1.sel({ longitude: { start: 33, stop: 37 } });
+      const chainedRange3 = await chainedRange2.sel({ time: { start: '1987-05-18T23:00:00', stop: '1987-05-22T23:00:00' } });
 
       const chainedRangeData = chainedRange3.isLazy
         ? await chainedRange3.compute()
@@ -492,9 +497,9 @@ describe('Lazy Evaluation with IPFS Datastores', () => {
 
     // Step 1: take a lazy range slice
     const rangeSelection = await variable.sel({
-      latitude: [48, 52],
-      longitude: [33, 37],
-      time: ['1987-05-18T23:00:00', '1987-05-22T23:00:00']
+      latitude: { start: 48, stop: 52 },
+      longitude: { start: 33, stop: 37 },
+      time: { start: '1987-05-18T23:00:00', stop: '1987-05-22T23:00:00' }
     });
 
     // Step 2: drill down to a specific coordinate within that range
