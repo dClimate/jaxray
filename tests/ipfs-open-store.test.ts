@@ -31,7 +31,12 @@ describe("IPFS store detection", () => {
     const manifest = {
       manifest_version: "sharded_zarr_v1",
       metadata: {},
-      chunks: { shard_cids: [], sharding_config: { chunks_per_shard: 1 } },
+      chunks: {
+        array_shape: [0],
+        chunk_shape: [1],
+        shard_cids: [],
+        sharding_config: { chunks_per_shard: 1 },
+      },
     };
     const bytes = dagCbor.encode(manifest);
     const ipfsElements = createMockIpfsElements(bytes);
@@ -42,16 +47,15 @@ describe("IPFS store detection", () => {
     );
     expect(type).toBe("sharded");
 
-    const fakeStore = { readOnly: true } as unknown as ShardedStore;
-    const openSpy = vi.spyOn(ShardedStore, "open").mockResolvedValue(fakeStore);
+    vi.mocked(ipfsElements.dagCbor.components.blockstore.get).mockClear();
 
     const { type: resolvedType, store } = await openIpfsStore(
       "bafyr4iacuutc5bgmirkfyzn4igi2wys7e42kkn674hx3c4dv4wrgjp2k2u",
       ipfsElements,
     );
     expect(resolvedType).toBe("sharded");
-    expect(openSpy).toHaveBeenCalled();
-    expect(store).toBe(fakeStore);
+    expect(store).toBeInstanceOf(ShardedStore);
+    expect(ipfsElements.dagCbor.components.blockstore.get).toHaveBeenCalledTimes(1);
   });
 
   test("falls back to HAMT store when manifest is absent", async () => {

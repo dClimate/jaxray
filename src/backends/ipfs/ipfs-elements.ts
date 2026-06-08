@@ -36,15 +36,13 @@ export function createIpfsElements(gatewayUrl = 'http://127.0.0.1:8080') {
     },
   };
 
-  const unixfs: UnixfsCat = {
-    cat: async function* (cid: string | CID): AsyncIterable<Uint8Array> {
-      const data = await gateway.load(cid);
-      yield data;
-    },
-  };
-
   return {
     dagCbor: { components: { blockstore: dagCborBlockstore } },
-    unixfs,
+    unixfs: {
+      cat: async function* (cid: string | CID, options?: { offset?: number; length?: number }): AsyncIterable<Uint8Array> {
+        const data = await gateway.load(cid, options?.offset ?? null, options?.length ?? null);
+        yield data;
+      },
+    },
   };
 }

@@ -18,7 +18,7 @@ type ChunkCoords = readonly number[];
 /**
  * Type definition for the root object (manifest) of the sharded store.
  */
-type ShardedRoot = {
+export type ShardedRoot = {
     manifest_version: "sharded_zarr_v1";
     /** A map of metadata keys (e.g., '.zattrs', 'zarr.json') to their CIDs. */
     metadata: Record<string, string>;
@@ -91,6 +91,19 @@ export class ShardedStore implements AsyncReadable {
         return store;
     }
 
+    public static fromRootObject(
+        rootCid: string,
+        ipfsElements: IPFSELEMENTS_INTERFACE,
+        rootObj: ShardedRoot,
+    ): ShardedStore {
+        if (!rootCid) {
+            throw new Error("A rootCid must be provided to open a read-only store.");
+        }
+        const store = new ShardedStore(rootCid, ipfsElements);
+        store.initializeRootObject(rootObj);
+        return store;
+    }
+
     private async loadRootFromCid() {
         // The root object itself is a DAG-CBOR block.
         // if type string, parse to CID
@@ -102,7 +115,10 @@ export class ShardedStore implements AsyncReadable {
         }
         const rootBytes = await this.ipfsElements.dagCbor.components.blockstore.get(rootCid);
         const rootObj = dagCbor.decode<ShardedRoot>(rootBytes);
+        this.initializeRootObject(rootObj);
+    }
 
+    private initializeRootObject(rootObj: ShardedRoot) {
         if (rootObj?.manifest_version !== "sharded_zarr_v1") {
             throw new Error(`Incompatible manifest version: ${rootObj?.manifest_version}`);
         }

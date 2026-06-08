@@ -111,9 +111,9 @@ export class ZarrBackend {
     // Map: arrayPath -> meta
     const arrayMetas: Map<string, any> = new Map();
 
-    for (const key of jsonKeys) {
+    const parsedMetadata = await Promise.all(jsonKeys.map(async (key) => {
       const bytes = await store.get(key);
-      if (!bytes) continue;
+      if (!bytes) return null;
 
       let meta: any;
       try {
@@ -121,13 +121,17 @@ export class ZarrBackend {
       } catch (e) {
         // Some implementations DAG-CBOR the zarr.json; try a safe CBOR decode if needed
         // but typically zarr.json is JSON text.
-        continue;
+        return null;
       }
 
       const nodeType = meta?.node_type;
       const path = dirname(key); // array/group path
+      return { nodeType, path, meta };
+    }));
 
-      if (nodeType === "array") {
+    for (const parsed of parsedMetadata) {
+      if (parsed?.nodeType === "array") {
+        const { path, meta } = parsed;
         arrayMetas.set(path, meta);
       }
       // (For groups, we don’t need to do anything special here.)
@@ -191,7 +195,7 @@ export class ZarrBackend {
     const coords: Record<string, any[]> = {};
     const coordAttrs: Record<string, Record<string, any>> = {}; // Store coordinate attributes
 
-    for (const arr of arrayMetadata) {
+    await Promise.all(arrayMetadata.map(async (arr) => {
       if (coordNames.has(arr.name)) {
         // Load coordinate data immediately using group.resolve()
         const coordArray = await zarr.open(zarrGroup.resolve(arr.name), { kind: "array" });
@@ -209,7 +213,7 @@ export class ZarrBackend {
         // Store coordinate attributes (e.g., time units)
         coordAttrs[arr.name] = arr.attrs;
       }
-    }
+    }));
 
     // ---- Build DataArrays for data variables (lazy - store metadata only) ----
     // For now, just return the Dataset with variable info in attrs
