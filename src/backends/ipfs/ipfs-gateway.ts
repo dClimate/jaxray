@@ -48,6 +48,41 @@ class Semaphore {
   }
 }
 
+const RETRYABLE_NETWORK_CODES = new Set([
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ENETUNREACH",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+
+function isRetryableNetworkError(err: unknown, seen = new Set<unknown>()): boolean {
+  if (!err || seen.has(err)) return false;
+  seen.add(err);
+
+  const error = err as {
+    name?: string;
+    code?: string;
+    type?: string;
+    message?: string;
+    cause?: unknown;
+    errors?: unknown[];
+  };
+
+  if (error.name === "AbortError") return true;
+  if (error.code && RETRYABLE_NETWORK_CODES.has(error.code)) return true;
+  if (error.type === "system") return true;
+  if (error.message && /timeout|network|fetch failed/i.test(error.message)) return true;
+  if (error.cause && isRetryableNetworkError(error.cause, seen)) return true;
+  if (Array.isArray(error.errors) && error.errors.some((nested) => isRetryableNetworkError(nested, seen))) {
+    return true;
+  }
+  return false;
+}
+
 // ----------------------- ContentAddressedStore API ---------------------------
 export type CodecInput = "raw" | "dag-cbor";
 
@@ -165,12 +200,7 @@ export class KuboCAS extends ContentAddressedStore {
         return await fn();
       } catch (err: any) {
         attempt++;
-        const isTimeoutOrNetwork =
-          err?.name === "AbortError" ||
-          err?.code === "ECONNRESET" ||
-          err?.type === "system" ||
-          (err?.message && /timeout|network/i.test(err.message));
-        if (!isTimeoutOrNetwork || attempt > this.maxRetries) {
+        if (!isRetryableNetworkError(err) || attempt > this.maxRetries) {
           throw err;
         }
         const delay = this.initialDelay * Math.pow(this.backoffFactor, attempt - 1);

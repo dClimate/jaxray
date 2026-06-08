@@ -1,6 +1,6 @@
 import * as dagCbor from "@ipld/dag-cbor";
 import { CID } from "multiformats/cid";
-import { ShardedStore } from "./sharded-store.js";
+import { ShardedStore, type ShardedRoot } from "./sharded-store.js";
 import { HamtStore } from "./hamt-store.js";
 import { IPFSELEMENTS_INTERFACE, createIpfsElements } from "./ipfs-elements.js";
 
@@ -74,11 +74,11 @@ const isShardedManifest = (decoded: unknown): decoded is { manifest_version: str
   return false;
 };
 
-const tryDecodeManifest = (bytes: Uint8Array): Record<string, unknown> | null => {
+const tryDecodeManifest = (bytes: Uint8Array): ShardedRoot | null => {
   try {
     const decoded = dagCbor.decode(bytes);
     if (isShardedManifest(decoded)) {
-      return decoded;
+      return decoded as ShardedRoot;
     }
   } catch {
     // ignore cbor decode error and try JSON
@@ -87,7 +87,7 @@ const tryDecodeManifest = (bytes: Uint8Array): Record<string, unknown> | null =>
   try {
     const json = JSON.parse(textDecoder.decode(bytes));
     if (isShardedManifest(json)) {
-      return json;
+      return json as ShardedRoot;
     }
   } catch {
     // ignore JSON parse failure
@@ -96,17 +96,26 @@ const tryDecodeManifest = (bytes: Uint8Array): Record<string, unknown> | null =>
   return null;
 };
 
+const resolveStoreType = async (
+  cid: string | CID,
+  ipfsElements: IPFSELEMENTS_INTERFACE,
+): Promise<{ rootCid: CID; type: StoreType; manifest: ShardedRoot | null }> => {
+  const { rootCid, bytes } = await fetchRootBlock(cid, ipfsElements);
+  const manifest = tryDecodeManifest(bytes);
+  return {
+    rootCid,
+    type: manifest ? "sharded" : "hamt",
+    manifest,
+  };
+};
+
 export const detectIpfsStoreType = async (
   cid: string | CID,
   options?: ResolveOptionsInput,
 ): Promise<StoreType> => {
   const ipfsElements = resolveIpfsElements(options);
-  const { bytes } = await fetchRootBlock(cid, ipfsElements);
-  const manifest = tryDecodeManifest(bytes);
-  if (manifest) {
-    return "sharded";
-  }
-  return "hamt";
+  const { type } = await resolveStoreType(cid, ipfsElements);
+  return type;
 };
 
 export const openIpfsStore = async (
@@ -114,13 +123,12 @@ export const openIpfsStore = async (
   options?: ResolveOptionsInput,
 ): Promise<{ type: StoreType; store: ShardedStore | HamtStore }> => {
   const ipfsElements = resolveIpfsElements(options);
-  const storeType = await detectIpfsStoreType(cid, ipfsElements);
-  if (storeType === "sharded") {
+  const { rootCid, type, manifest } = await resolveStoreType(cid, ipfsElements);
+  if (type === "sharded") {
     const root = typeof cid === "string" ? cid : cid.toString();
-    const store = await ShardedStore.open(root, ipfsElements);
+    const store = ShardedStore.fromRootObject(root, ipfsElements, manifest!);
     return { type: "sharded", store };
   }
-  const rootCid = typeof cid === "string" ? CID.parse(cid) : cid;
   const hamtStore = new HamtStore(rootCid, ipfsElements);
   return { type: "hamt", store: hamtStore };
 };
