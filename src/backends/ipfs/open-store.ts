@@ -65,10 +65,13 @@ const isShardedManifest = (decoded: unknown): decoded is { manifest_version: str
     return false;
   }
   const manifest = decoded as Record<string, unknown>;
-  if (manifest.manifest_version === "sharded_zarr_v1") {
+  if (manifest.manifest_version === "sharded_zarr_v1" || manifest.manifest_version === "sharded_zarr_v2") {
     return true;
   }
   if (manifest.chunks && typeof manifest.chunks === "object") {
+    return true;
+  }
+  if (manifest.arrays && typeof manifest.arrays === "object") {
     return true;
   }
   return false;

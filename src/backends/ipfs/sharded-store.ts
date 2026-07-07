@@ -9,39 +9,66 @@ import all from "it-all";
 import { CID } from "multiformats/cid";
 import { IPFSELEMENTS_INTERFACE } from "./ipfs-elements";
 
-// #region Utility Types and Interfaces
-/**
- * Type alias for N-dimensional chunk coordinates.
- */
 type ChunkCoords = readonly number[];
+type CidLike = string | CID | { toString(): string };
 
-/**
- * Type definition for the root object (manifest) of the sharded store.
- */
-export type ShardedRoot = {
+type ShardingConfig = {
+    chunks_per_shard: number;
+    order?: string;
+};
+
+export type ShardedRootV1 = {
     manifest_version: "sharded_zarr_v1";
-    /** A map of metadata keys (e.g., '.zattrs', 'zarr.json') to their CIDs. */
-    metadata: Record<string, string>;
-    /** Information about the sharded chunk index. */
+    metadata: Record<string, CidLike>;
     chunks: {
         array_shape: number[];
         chunk_shape: number[];
-        sharding_config: {
-            chunks_per_shard: number;
-        };
-        /** A list of CIDs, where each CID points to a DAG-CBOR shard of the chunk index. */
-        shard_cids: (string | null)[];
+        sharding_config: ShardingConfig;
+        shard_cids: (CidLike | null)[];
     };
 };
 
-// #endregion
+export type ShardedArrayManifest = {
+    array_shape: number[];
+    chunk_shape: number[];
+    sharding_config: ShardingConfig;
+    shard_cids: (CidLike | null)[];
+};
+
+export type ShardedRootV2 = {
+    manifest_version: "sharded_zarr_v2";
+    sharding_config?: Partial<ShardingConfig>;
+    metadata: Record<string, CidLike>;
+    arrays: Record<string, ShardedArrayManifest>;
+};
+
+export type ShardedRoot = ShardedRootV1 | ShardedRootV2;
+
+type ArrayIndex = {
+    arrayPath: string;
+    arrayShape: readonly number[];
+    chunkShape: readonly number[];
+    chunksPerDim: readonly number[];
+    chunksPerShard: number;
+    numShards: number;
+    totalChunks: number;
+    shardCids: readonly (CidLike | null)[];
+    order: string;
+};
+
+type ParsedChunkKey = {
+    arrayPath: string;
+    coords: ChunkCoords;
+    index: ArrayIndex;
+};
+
+const ZARR_METADATA_SUFFIXES = ["zarr.json", ".zarray", ".zattrs", ".zgroup", ".zmetadata"];
 
 /**
  * A read-only Zarr Store implementation that uses a sharded layout for chunk indices.
  *
- * This store reads a Zarr array where the chunk index is split into multiple "shards".
- * Each shard is a DAG-CBOR encoded list containing CIDs for a subset of chunks, or null
- * for empty chunks. This aligns with modern IPLD data structures.
+ * This store supports both the original sharded_zarr_v1 manifest and the
+ * path-aware sharded_zarr_v2 manifest introduced by py-hamt 3.4.0.
  */
 export class ShardedStore implements AsyncReadable {
     public readonly readOnly = true;
@@ -52,13 +79,19 @@ export class ShardedStore implements AsyncReadable {
 
     private rootObj?: ShardedRoot;
 
-    private shardDataCache = new Map<number, (string | null)[]>();
+    private manifestVersion?: ShardedRoot["manifest_version"];
 
-    private pendingShardLoads = new Map<number, Promise<void>>();
+    private shardDataCache = new Map<string, (CidLike | null)[]>();
+
+    private pendingShardLoads = new Map<string, Promise<void>>();
 
     private metadataCache = new Map<string, Uint8Array>();
 
-    // Properties derived from the root object
+    private arrayIndices = new Map<string, ArrayIndex>();
+
+    private primaryArrayPath = "";
+
+    // Legacy geometry fields retained for older tests/consumers that introspect them.
     private arrayShape?: readonly number[];
 
     private chunkShape?: readonly number[];
@@ -71,17 +104,11 @@ export class ShardedStore implements AsyncReadable {
 
     private totalChunks?: number;
 
-    /**
-     * Private constructor. Use the static `open` method to create an instance.
-     */
     private constructor(rootCid: string, ipfsElements: IPFSELEMENTS_INTERFACE) {
         this.ipfsElements = ipfsElements;
         this.rootCid = rootCid;
     }
 
-    /**
-     * Asynchronously opens an existing read-only ShardedStore.
-     */
     public static async open(rootCid: string, ipfsElements: IPFSELEMENTS_INTERFACE): Promise<ShardedStore> {
         if (!rootCid) {
             throw new Error("A rootCid must be provided to open a read-only store.");
@@ -104,243 +131,393 @@ export class ShardedStore implements AsyncReadable {
         return store;
     }
 
-    private async loadRootFromCid() {
-        // The root object itself is a DAG-CBOR block.
-        // if type string, parse to CID
-        let rootCid: CID;
-        if (typeof this.rootCid === "string") {
-            rootCid = CID.parse(this.rootCid);
-        } else {
-            rootCid = this.rootCid;
+    private static normalizeStoreKey(key: string): string {
+        return key.replace(/^\/+/, "").replace(/\/+$/, "");
+    }
+
+    private static normalizeArrayPath(path: string | undefined): string {
+        return (path ?? "").replace(/^\/+/, "").replace(/\/+$/, "");
+    }
+
+    private static isMetadataKey(key: string): boolean {
+        return ZARR_METADATA_SUFFIXES.some((suffix) => key === suffix || key.endsWith(`/${suffix}`));
+    }
+
+    private static createArrayIndex(
+        arrayPath: string,
+        arrayShape: readonly number[],
+        chunkShape: readonly number[],
+        shardingConfig: ShardingConfig,
+        shardCids: readonly (CidLike | null)[],
+    ): ArrayIndex {
+        if (!Number.isInteger(shardingConfig.chunks_per_shard) || shardingConfig.chunks_per_shard <= 0) {
+            throw new Error("chunks_per_shard must be a positive integer.");
         }
+        if (shardingConfig.order && shardingConfig.order !== "C") {
+            throw new Error("Only row-major ('C') shard ordering is supported.");
+        }
+        if (arrayShape.length !== chunkShape.length) {
+            throw new Error("array_shape and chunk_shape must have the same rank.");
+        }
+        if (chunkShape.some((dim) => dim <= 0)) {
+            throw new Error("All chunk_shape dimensions must be positive.");
+        }
+        if (arrayShape.some((dim) => dim < 0)) {
+            throw new Error("All array_shape dimensions must be non-negative.");
+        }
+
+        const chunksPerDim = arrayShape.map((dim, i) => Math.ceil(dim / chunkShape[i]));
+        const totalChunks = chunksPerDim.reduce((prod, dim) => prod * dim, 1);
+        const numShards = totalChunks > 0
+            ? Math.ceil(totalChunks / shardingConfig.chunks_per_shard)
+            : 0;
+
+        if (shardCids.length !== numShards) {
+            throw new Error(`Inconsistent number of shards. Expected ${numShards}, found ${shardCids.length}.`);
+        }
+
+        return {
+            arrayPath: ShardedStore.normalizeArrayPath(arrayPath),
+            arrayShape,
+            chunkShape,
+            chunksPerDim,
+            chunksPerShard: shardingConfig.chunks_per_shard,
+            numShards,
+            totalChunks,
+            shardCids,
+            order: shardingConfig.order ?? "C",
+        };
+    }
+
+    private async loadRootFromCid() {
+        const rootCid = CID.parse(this.rootCid);
         const rootBytes = await this.ipfsElements.dagCbor.components.blockstore.get(rootCid);
         const rootObj = dagCbor.decode<ShardedRoot>(rootBytes);
         this.initializeRootObject(rootObj);
     }
 
     private initializeRootObject(rootObj: ShardedRoot) {
-        if (rootObj?.manifest_version !== "sharded_zarr_v1") {
-            throw new Error(`Incompatible manifest version: ${rootObj?.manifest_version}`);
-        }
         this.rootObj = rootObj;
+        this.manifestVersion = rootObj?.manifest_version;
+        this.arrayIndices.clear();
 
-        const chunkInfo = this.rootObj.chunks;
-        this.arrayShape = chunkInfo.array_shape;
-        this.chunkShape = chunkInfo.chunk_shape;
-        this.chunksPerShard = chunkInfo.sharding_config.chunks_per_shard;
+        if (rootObj?.manifest_version === "sharded_zarr_v1") {
+            this.initializeV1Root(rootObj);
+            return;
+        }
 
-        this.chunksPerDim = this.arrayShape.map((dim, i) => Math.ceil(dim / this.chunkShape![i]));
-        this.totalChunks = this.chunksPerDim.reduce((prod, dim) => prod * dim, 1);
-        this.numShards = this.totalChunks > 0 ? Math.ceil(this.totalChunks / this.chunksPerShard) : 0;
+        if (rootObj?.manifest_version === "sharded_zarr_v2") {
+            this.initializeV2Root(rootObj);
+            return;
+        }
 
-        if (chunkInfo.shard_cids.length !== this.numShards) {
-            throw new Error("Inconsistent number of shards in root object.");
+        const manifestVersion = (rootObj as { manifest_version?: unknown } | undefined)?.manifest_version;
+        throw new Error(`Incompatible manifest version: ${manifestVersion}`);
+    }
+
+    private initializeV1Root(rootObj: ShardedRootV1) {
+        const chunkInfo = rootObj.chunks;
+        const index = ShardedStore.createArrayIndex(
+            "",
+            chunkInfo.array_shape,
+            chunkInfo.chunk_shape,
+            chunkInfo.sharding_config,
+            chunkInfo.shard_cids,
+        );
+        this.arrayIndices.set("", index);
+        this.primaryArrayPath = "";
+        this.setLegacyGeometry(index);
+    }
+
+    private initializeV2Root(rootObj: ShardedRootV2) {
+        if (!rootObj.metadata || typeof rootObj.metadata !== "object" || !rootObj.arrays || typeof rootObj.arrays !== "object") {
+            throw new Error("Root object is not a valid v2 dictionary with 'metadata' and 'arrays' keys.");
+        }
+
+        for (const [arrayPath, arrayManifest] of Object.entries(rootObj.arrays)) {
+            const index = ShardedStore.createArrayIndex(
+                arrayPath,
+                arrayManifest.array_shape,
+                arrayManifest.chunk_shape,
+                arrayManifest.sharding_config,
+                arrayManifest.shard_cids,
+            );
+            this.arrayIndices.set(index.arrayPath, index);
+        }
+
+        this.primaryArrayPath = this.arrayIndices.keys().next().value ?? "";
+        const primaryIndex = this.arrayIndices.get(this.primaryArrayPath);
+        if (primaryIndex) {
+            this.setLegacyGeometry(primaryIndex);
+        } else {
+            this.arrayShape = undefined;
+            this.chunkShape = undefined;
+            this.chunksPerDim = undefined;
+            this.chunksPerShard = undefined;
+            this.numShards = undefined;
+            this.totalChunks = undefined;
         }
     }
 
-    /** Parses a Zarr key to determine if it's a chunk key and returns its coordinates. */
-    private parseChunkKey(key: string): ChunkCoords | null {
-        if (key.endsWith(".json") || key.endsWith(".zattrs") || key.endsWith(".zgroup")) {
+    private setLegacyGeometry(index: ArrayIndex) {
+        this.arrayShape = index.arrayShape;
+        this.chunkShape = index.chunkShape;
+        this.chunksPerDim = index.chunksPerDim;
+        this.chunksPerShard = index.chunksPerShard;
+        this.numShards = index.numShards;
+        this.totalChunks = index.totalChunks;
+    }
+
+    private parseChunkKey(key: string): ParsedChunkKey | null {
+        if (ShardedStore.isMetadataKey(key)) {
             return null;
         }
 
         const chunkMarker = "/c/";
         const markerIdx = key.lastIndexOf(chunkMarker);
-        if (markerIdx === -1) return null;
-
-        const coordPart = key.substring(markerIdx + chunkMarker.length);
-        const parts = coordPart.split("/");
-
-        if (parts.length !== this.chunksPerDim?.length) {
-            return null; // Dimensionality mismatch
+        if (markerIdx !== -1) {
+            const arrayPath = ShardedStore.normalizeArrayPath(key.substring(0, markerIdx));
+            const coordPart = key.substring(markerIdx + chunkMarker.length);
+            return this.parseChunkCoords(arrayPath, coordPart);
         }
 
-        try {
-            const coords = parts.map(Number);
-            for (let i = 0; i < coords.length; i++) {
-                if (Number.isNaN(coords[i]) || coords[i] < 0 || coords[i] >= this.chunksPerDim![i]) {
-                    return null;
-                }
-            }
-            return coords;
-        } catch {
-            return null;
+        if (this.manifestVersion === "sharded_zarr_v2" && key.startsWith("c/")) {
+            return this.parseChunkCoords("", key.substring(2));
         }
+
+        if (this.manifestVersion === "sharded_zarr_v2") {
+            return this.parseClassicV2ChunkKey(key);
+        }
+
+        return null;
     }
 
-    /** Converts N-D chunk coordinates to a 1-D linear index. */
-    private getLinearChunkIndex(chunkCoords: ChunkCoords): number {
+    private parseClassicV2ChunkKey(key: string): ParsedChunkKey | null {
+        const dottedChunk = this.parseClassicDottedV2ChunkKey(key);
+        if (dottedChunk) {
+            return dottedChunk;
+        }
+
+        const entries = [...this.arrayIndices.entries()]
+            .sort(([left], [right]) => right.length - left.length);
+        for (const [arrayPath, index] of entries) {
+            const prefix = arrayPath ? `${arrayPath}/` : "";
+            if (prefix && !key.startsWith(prefix)) {
+                continue;
+            }
+            const coordPart = prefix ? key.substring(prefix.length) : key;
+            const parts = coordPart.split("/");
+            if (parts.length !== index.chunksPerDim.length || !parts.every((part) => /^\d+$/.test(part))) {
+                continue;
+            }
+            const coords = parts.map(Number);
+            if (!this.areChunkCoordsValid(coords, index)) {
+                continue;
+            }
+            return { arrayPath, coords, index };
+        }
+        return null;
+    }
+
+    private parseClassicDottedV2ChunkKey(key: string): ParsedChunkKey | null {
+        const slashIdx = key.lastIndexOf("/");
+        const arrayPath = slashIdx === -1 ? "" : ShardedStore.normalizeArrayPath(key.substring(0, slashIdx));
+        const coordPart = slashIdx === -1 ? key : key.substring(slashIdx + 1);
+        if (!coordPart.includes(".")) {
+            return null;
+        }
+        const index = this.arrayIndices.get(arrayPath);
+        if (!index) {
+            return null;
+        }
+        const parts = coordPart.split(".");
+        if (parts.length !== index.chunksPerDim.length || !parts.every((part) => /^\d+$/.test(part))) {
+            return null;
+        }
+        const coords = parts.map(Number);
+        if (!this.areChunkCoordsValid(coords, index)) {
+            return null;
+        }
+        return { arrayPath, coords, index };
+    }
+
+    private parseChunkCoords(arrayPath: string, coordPart: string): ParsedChunkKey | null {
+        const index = this.manifestVersion === "sharded_zarr_v1"
+            ? this.arrayIndices.get("")
+            : this.arrayIndices.get(arrayPath);
+        if (!index) {
+            return null;
+        }
+
+        const parts = coordPart.split("/");
+        if (parts.length !== index.chunksPerDim.length || !parts.every((part) => /^\d+$/.test(part))) {
+            return null;
+        }
+
+        const coords = parts.map(Number);
+        if (!this.areChunkCoordsValid(coords, index)) {
+            return null;
+        }
+
+        return {
+            arrayPath: index.arrayPath,
+            coords,
+            index,
+        };
+    }
+
+    private areChunkCoordsValid(coords: ChunkCoords, index: ArrayIndex): boolean {
+        if (coords.length !== index.chunksPerDim.length) {
+            return false;
+        }
+        return coords.every((coord, i) => Number.isInteger(coord) && coord >= 0 && coord < index.chunksPerDim[i]);
+    }
+
+    private getLinearChunkIndex(chunkCoords: ChunkCoords, index: ArrayIndex): number {
         let linearIndex = 0;
         let multiplier = 1;
-        for (let i = this.chunksPerDim!.length - 1; i >= 0; i--) {
+        for (let i = index.chunksPerDim.length - 1; i >= 0; i--) {
             linearIndex += chunkCoords[i] * multiplier;
-            multiplier *= this.chunksPerDim![i];
+            multiplier *= index.chunksPerDim[i];
         }
         return linearIndex;
     }
 
-    /** Calculates the shard index and the index within the shard for a chunk. */
-    private getShardInfo(linearChunkIndex: number): [number, number] {
-        if (!this.chunksPerShard || this.chunksPerShard <= 0) {
-            throw new Error("Sharding not configured properly.");
-        }
-        const shardIdx = Math.floor(linearChunkIndex / this.chunksPerShard);
-        const indexInShard = linearChunkIndex % this.chunksPerShard;
+    private getShardInfo(linearChunkIndex: number, index: ArrayIndex): [number, number] {
+        const shardIdx = Math.floor(linearChunkIndex / index.chunksPerShard);
+        const indexInShard = linearChunkIndex % index.chunksPerShard;
         return [shardIdx, indexInShard];
     }
 
-    /**
-     * Retrieves a value from the store. Handles both metadata and chunk data.
-     */
     async get(key: string): Promise<Uint8Array | undefined> {
         if (!this.rootObj) throw new Error("Root object not loaded.");
-        // eslint-disable-next-line no-param-reassign
-        key = key.startsWith("/") ? key.substring(1) : key;
-        const chunkCoords = this.parseChunkKey(key);
+        const normalizedKey = ShardedStore.normalizeStoreKey(key);
+        const parsedChunk = this.parseChunkKey(normalizedKey);
 
-        // Handle metadata request
-        if (chunkCoords === null) {
-            // This is actually already parsed CID
-            const metadataCid = this.rootObj.metadata[key];
+        if (parsedChunk === null) {
+            const metadataCid = this.rootObj.metadata[normalizedKey];
             if (!metadataCid) {
-                return undefined; // Metadata key not found
+                return undefined;
             }
-            if (this.metadataCache.has(metadataCid)) {
-                return this.metadataCache.get(metadataCid);
+            const metadataCacheKey = String(metadataCid);
+            if (this.metadataCache.has(metadataCacheKey)) {
+                return this.metadataCache.get(metadataCacheKey);
             }
-            const stream = this.ipfsElements.unixfs.cat(metadataCid);
+            const stream = this.ipfsElements.unixfs.cat(metadataCacheKey);
             const cidBytes = uint8ArrayConcat(await all(stream));
-            this.metadataCache.set(metadataCid, cidBytes);
+            this.metadataCache.set(metadataCacheKey, cidBytes);
             return cidBytes;
         }
 
-        // Handle chunk data request
-        const linearIdx = this.getLinearChunkIndex(chunkCoords);
-        const [shardIdx, indexInShard] = this.getShardInfo(linearIdx);
+        const linearIdx = this.getLinearChunkIndex(parsedChunk.coords, parsedChunk.index);
+        const [shardIdx, indexInShard] = this.getShardInfo(linearIdx, parsedChunk.index);
 
-        if (shardIdx >= (this.numShards ?? 0)) return undefined;
+        if (shardIdx >= parsedChunk.index.numShards) return undefined;
 
-        const decodedShard = await this.getOrLoadDecodedShard(shardIdx);
+        const decodedShard = await this.getOrLoadDecodedShard(parsedChunk.index, shardIdx);
         if (!decodedShard) {
-            // Shard couldn't be loaded or doesn't exist.
             return undefined;
         }
 
         const chunkCid = decodedShard[indexInShard];
         if (!chunkCid) {
-            // Chunk is explicitly empty/non-existent.
             return undefined;
         }
 
-        // Fetch the actual chunk data using the retrieved CID.
-        const stream = this.ipfsElements.unixfs.cat(chunkCid);
+        const stream = this.ipfsElements.unixfs.cat(String(chunkCid));
         const contentBlocks = await all(stream as AsyncIterable<Uint8Array>);
         return uint8ArrayConcat(contentBlocks);
     }
 
-    /** Checks if a key exists in the store. */
     async has(key: AbsolutePath): Promise<boolean> {
         if (!this.rootObj) throw new Error("Root object not loaded.");
-        const chunkCoords = this.parseChunkKey(key);
+        const normalizedKey = ShardedStore.normalizeStoreKey(key);
+        const parsedChunk = this.parseChunkKey(normalizedKey);
 
-        // Handle metadata
-        if (chunkCoords === null) {
-            return key in this.rootObj.metadata;
+        if (parsedChunk === null) {
+            return normalizedKey in this.rootObj.metadata;
         }
 
-        // Handle chunks
         try {
-            const linearIdx = this.getLinearChunkIndex(chunkCoords);
-            const [shardIdx, indexInShard] = this.getShardInfo(linearIdx);
+            const linearIdx = this.getLinearChunkIndex(parsedChunk.coords, parsedChunk.index);
+            const [shardIdx, indexInShard] = this.getShardInfo(linearIdx, parsedChunk.index);
 
-            if (shardIdx >= (this.numShards ?? 0)) return false;
+            if (shardIdx >= parsedChunk.index.numShards) return false;
 
-            const decodedShard = await this.getOrLoadDecodedShard(shardIdx);
-            if (!decodedShard) return false; // Shard not loaded or doesn't exist
+            const decodedShard = await this.getOrLoadDecodedShard(parsedChunk.index, shardIdx);
+            if (!decodedShard) return false;
 
-            // An entry exists if the pointer at its index is not null.
             return decodedShard[indexInShard] !== null;
         } catch {
             return false;
         }
     }
 
-    /**
-     * Encapsulates the logic to get a decoded shard from cache or load it.
-     */
-    private async getOrLoadDecodedShard(shardIdx: number): Promise<(string | null)[] | undefined> {
-        if (this.shardDataCache.has(shardIdx)) {
-            return this.shardDataCache.get(shardIdx)!;
+    private shardCacheKey(index: ArrayIndex, shardIdx: number): string {
+        return `${index.arrayPath}\0${shardIdx}`;
+    }
+
+    private async getOrLoadDecodedShard(index: ArrayIndex, shardIdx: number): Promise<(CidLike | null)[] | undefined> {
+        const cacheKey = this.shardCacheKey(index, shardIdx);
+        if (this.shardDataCache.has(cacheKey)) {
+            return this.shardDataCache.get(cacheKey)!;
         }
 
-        if (this.pendingShardLoads.has(shardIdx)) {
-            await this.pendingShardLoads.get(shardIdx)!;
-            return this.shardDataCache.get(shardIdx); // May be undefined if load failed
+        if (this.pendingShardLoads.has(cacheKey)) {
+            await this.pendingShardLoads.get(cacheKey)!;
+            return this.shardDataCache.get(cacheKey);
         }
-        if (!this.rootObj) throw new Error("Root object not loaded.");
-        const shardCid = this.rootObj.chunks.shard_cids[shardIdx];
 
+        const shardCid = index.shardCids[shardIdx];
         if (!shardCid) {
-            // If the root manifest lists a null shard, treat it as a list of nulls.
-            if (!this.chunksPerShard) throw new Error("Sharding not configured.");
-            const emptyShard = new Array(this.chunksPerShard).fill(null);
-            this.shardDataCache.set(shardIdx, emptyShard);
+            const emptyShard = new Array(index.chunksPerShard).fill(null);
+            this.shardDataCache.set(cacheKey, emptyShard);
             return emptyShard;
         }
-        // convert shardCid to string
+
         const shardCidStr = String(shardCid);
         try {
-            await this.loadAndCacheShard(shardIdx, shardCidStr);
-            return this.shardDataCache.get(shardIdx);
+            await this.loadAndCacheShard(cacheKey, shardIdx, shardCidStr);
+            return this.shardDataCache.get(cacheKey);
         } catch (err) {
             console.error(`Failed to load shard ${shardIdx} (CID: ${shardCidStr}).`, err);
-            return undefined; // Indicate failure
+            return undefined;
         }
     }
 
-    /**
-     * Loads, decodes, and caches a single shard.
-     */
-    private loadAndCacheShard(shardIdx: number, shardCid: string): Promise<void> {
-        if (this.pendingShardLoads.has(shardIdx)) {
-            return this.pendingShardLoads.get(shardIdx)!;
+    private loadAndCacheShard(cacheKey: string, shardIdx: number, shardCid: string): Promise<void> {
+        if (this.pendingShardLoads.has(cacheKey)) {
+            return this.pendingShardLoads.get(cacheKey)!;
         }
         const loadPromise = (async () => {
             try {
                 const shardCidObj = CID.parse(shardCid);
                 const shardBlockBytes = await this.ipfsElements.dagCbor.components.blockstore.get(shardCidObj);
-                // Decode it into a list of CIDs/nulls.
-                const decodedShard = dagCbor.decode<(string | null)[]>(shardBlockBytes);
+                const decodedShard = dagCbor.decode<(CidLike | null)[]>(shardBlockBytes);
 
                 if (!Array.isArray(decodedShard)) {
                     throw new TypeError(`Shard ${shardIdx} (CID: ${shardCid}) did not decode to an array.`);
                 }
-                this.shardDataCache.set(shardIdx, decodedShard);
+                this.shardDataCache.set(cacheKey, decodedShard);
             } catch (err) {
                 console.error(`Failed to load and decode shard ${shardIdx} (CID: ${shardCid}):`, err);
-                throw err; // Re-throw to propagate failure to the caller.
+                throw err;
             } finally {
-                this.pendingShardLoads.delete(shardIdx);
+                this.pendingShardLoads.delete(cacheKey);
             }
         })();
 
-        this.pendingShardLoads.set(shardIdx, loadPromise);
+        this.pendingShardLoads.set(cacheKey, loadPromise);
         return loadPromise;
     }
 
-    /**
-     * List all metadata keys available in this store
-     * Required by ZarrBackend for discovery
-     */
     listMetadataKeys(): string[] {
         if (!this.rootObj) {
             throw new Error("Root object not loaded.");
         }
-        // Return all metadata keys from the root manifest
         return Object.keys(this.rootObj.metadata);
     }
 
-    // #region Unsupported Write Methods
     set(_key: AbsolutePath, _value: Uint8Array): Promise<void> {
         throw new Error("Store is read-only.");
     }
@@ -348,9 +525,7 @@ export class ShardedStore implements AsyncReadable {
     delete(_key: AbsolutePath): Promise<void> {
         throw new Error("Store is read-only.");
     }
-    // #endregion
 
-    // Let zarrita handle the fallback for range requests.
     getRange?(_key: AbsolutePath, _range: RangeQuery): Promise<Uint8Array | undefined> {
         throw new Error("Range requests are not supported in this read-only store.");
     }

@@ -71,6 +71,19 @@ function dirname(path: string): string {
   return idx === -1 ? "" : p.slice(0, idx);
 }
 
+function normalizeGroup(group: string): string {
+  return group.replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function isPathUnderGroup(path: string, group: string): boolean {
+  return path === group || path.startsWith(`${group}/`);
+}
+
+function relativeToGroup(path: string, group: string): string {
+  if (!group) return path;
+  if (path === group) return "";
+  return path.slice(group.length + 1);
+}
 
 export class ZarrBackend {
   /**
@@ -93,17 +106,12 @@ export class ZarrBackend {
       );
     }
 
-    // Keep only keys under the requested group (prefix match) and ending with zarr.json
-    const normalizedGroup = group.replace(/^\/+/, "").replace(/\/+$/, "");
-    const jsonKeys = listKeys
-      .filter((k) => k.endsWith("zarr.json"))
-      .filter((k) =>
-        normalizedGroup ? k === `${normalizedGroup}/zarr.json` || k.startsWith(`${normalizedGroup}/`) : true
-      );
+    const requestedGroup = normalizeGroup(group);
+    const jsonKeys = listKeys.filter((k) => k.endsWith("zarr.json"));
 
-    if (jsonKeys.length === 0) {
+    if (jsonKeys.length === 0 || (requestedGroup && !jsonKeys.some((k) => k === `${requestedGroup}/zarr.json` || k.startsWith(`${requestedGroup}/`)))) {
       throw new Error(
-        `ZarrBackend.open: no zarr.json under group "${normalizedGroup || "/"}".`
+        `ZarrBackend.open: no zarr.json under group "${requestedGroup || "/"}".`
       );
     }
 
@@ -137,6 +145,43 @@ export class ZarrBackend {
       // (For groups, we don’t need to do anything special here.)
     }
 
+    let normalizedGroup = requestedGroup;
+    if (!normalizedGroup) {
+      const arrayPaths = [...arrayMetas.keys()];
+      const rootArrayPaths = arrayPaths.filter((path) => !path.includes("/"));
+      const topLevelGroups = new Set(
+        arrayPaths
+          .filter((path) => path.includes("/"))
+          .map((path) => path.split("/", 1)[0])
+      );
+
+      if (rootArrayPaths.length === 0 && topLevelGroups.size > 1) {
+        throw new Error(
+          "ZarrBackend.open: grouped Zarr stores with multiple top-level groups require an explicit group option."
+        );
+      }
+
+      if (rootArrayPaths.length === 0 && topLevelGroups.size === 1) {
+        normalizedGroup = [...topLevelGroups][0];
+      }
+
+      if (rootArrayPaths.length > 0) {
+        for (const path of [...arrayMetas.keys()]) {
+          if (path.includes("/")) {
+            arrayMetas.delete(path);
+          }
+        }
+      }
+    }
+
+    if (normalizedGroup) {
+      for (const path of [...arrayMetas.keys()]) {
+        if (!isPathUnderGroup(path, normalizedGroup)) {
+          arrayMetas.delete(path);
+        }
+      }
+    }
+
     if (arrayMetas.size === 0) {
       throw new Error(
         `ZarrBackend.open: found zarr.json files, but none were arrays under "${normalizedGroup || "/"}".`
@@ -147,6 +192,7 @@ export class ZarrBackend {
     const arrayMetadata: Array<{
       path: string;
       name: string;
+      relativePath: string;
       meta: any;
       dims: string[];
       attrs: Record<string, any>;
@@ -155,6 +201,7 @@ export class ZarrBackend {
 
     for (const [path, meta] of arrayMetas.entries()) {
       const name = lastSegment(path);
+      const relativePath = relativeToGroup(path, normalizedGroup);
 
       const dims =
         Array.isArray(meta?.dimension_names) && meta.dimension_names.length === meta.shape?.length
@@ -165,7 +212,7 @@ export class ZarrBackend {
       const attrs = meta?.attributes ?? {};
       const shape = meta?.shape ?? [];
 
-      arrayMetadata.push({ path, name, meta, dims, attrs, shape });
+      arrayMetadata.push({ path, name, relativePath, meta, dims, attrs, shape });
     }
 
     // ---- Heuristic: identify coordinate variables ----
@@ -189,7 +236,9 @@ export class ZarrBackend {
     }
 
     // ---- Open zarr group ----
-    const zarrGroup = await zarr.open(store as any, { kind: "group" });
+    const rootLocation = zarr.root(store as any);
+    const groupLocation = normalizedGroup ? rootLocation.resolve(normalizedGroup) : rootLocation;
+    const zarrGroup = await zarr.open(groupLocation, { kind: "group" });
 
     // ---- Load coordinate arrays (eagerly - they're small and needed for selection) ----
     const coords: Record<string, any[]> = {};
@@ -198,7 +247,7 @@ export class ZarrBackend {
     await Promise.all(arrayMetadata.map(async (arr) => {
       if (coordNames.has(arr.name)) {
         // Load coordinate data immediately using group.resolve()
-        const coordArray = await zarr.open(zarrGroup.resolve(arr.name), { kind: "array" });
+        const coordArray = await zarr.open(zarrGroup.resolve(arr.relativePath), { kind: "array" });
 
         const coordData = await zarr.get(coordArray);
 
@@ -248,7 +297,7 @@ export class ZarrBackend {
 
       // Create a lazy loader function that the DataArray can call
       const lazyLoader = async (indexRanges: { [dim: string]: { start: number; stop: number } | number }) => {
-        const arrNode = await zarr.open(zarrGroup.resolve(arr.name), { kind: 'array'});
+        const arrNode = await zarr.open(zarrGroup.resolve(arr.relativePath), { kind: 'array'});
         // Build zarr selection
         const zarrSelection: (number | any | null)[] = [];
         for (const dim of arr.dims) {

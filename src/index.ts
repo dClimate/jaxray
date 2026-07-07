@@ -34,4 +34,4 @@ export {
 } from './backends/zarrita-codecs/xchacha20poly1305.js';
 
 // Version
-export const VERSION = '0.2.1';
+export const VERSION = '0.6.10';
