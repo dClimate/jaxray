@@ -192,6 +192,90 @@ describe('ZarrBackend', () => {
     expect(dataset.attrs.version).toBe('1.0');
   });
 
+  test('should open arrays relative to an explicit group', async () => {
+    const store = new MemoryZarrStore({
+      'zarr.json': { node_type: 'group', attributes: {} },
+      '0/zarr.json': {
+        node_type: 'group',
+        attributes: {
+          level: '0'
+        }
+      },
+      '0/data/zarr.json': {
+        node_type: 'array',
+        shape: [5, 10],
+        dimension_names: ['y', 'x'],
+        attributes: {}
+      },
+      '1/zarr.json': {
+        node_type: 'group',
+        attributes: {
+          level: '1'
+        }
+      },
+      '1/data/zarr.json': {
+        node_type: 'array',
+        shape: [2, 4],
+        dimension_names: ['y', 'x'],
+        attributes: {}
+      }
+    });
+
+    const dataset = await ZarrBackend.open(store, { group: '0' });
+    const dataVar = dataset.getVariable('data');
+
+    expect(dataset.attrs.level).toBe('0');
+    expect(dataVar.shape).toEqual([5, 10]);
+    expect(dataVar.attrs._zarr_path).toBe('0/data');
+  });
+
+  test('should default root reads to the only top-level group', async () => {
+    const store = new MemoryZarrStore({
+      'zarr.json': { node_type: 'group', attributes: {} },
+      '0/zarr.json': {
+        node_type: 'group',
+        attributes: {
+          level: '0'
+        }
+      },
+      '0/data/zarr.json': {
+        node_type: 'array',
+        shape: [5, 10],
+        dimension_names: ['y', 'x'],
+        attributes: {}
+      }
+    });
+
+    const dataset = await ZarrBackend.open(store);
+    const dataVar = dataset.getVariable('data');
+
+    expect(dataset.attrs.level).toBe('0');
+    expect(dataVar.attrs._zarr_path).toBe('0/data');
+  });
+
+  test('should require an explicit group for multiple top-level groups', async () => {
+    const store = new MemoryZarrStore({
+      'zarr.json': { node_type: 'group', attributes: {} },
+      '0/zarr.json': { node_type: 'group', attributes: {} },
+      '0/data/zarr.json': {
+        node_type: 'array',
+        shape: [5, 10],
+        dimension_names: ['y', 'x'],
+        attributes: {}
+      },
+      '1/zarr.json': { node_type: 'group', attributes: {} },
+      '1/data/zarr.json': {
+        node_type: 'array',
+        shape: [2, 4],
+        dimension_names: ['y', 'x'],
+        attributes: {}
+      }
+    });
+
+    await expect(ZarrBackend.open(store))
+      .rejects.toThrow('multiple top-level groups require an explicit group option');
+  });
+
   test('should automatically detect encryption when opening store', async () => {
     const store = new MemoryZarrStore({
       'zarr.json': { node_type: 'group', attributes: {} },
