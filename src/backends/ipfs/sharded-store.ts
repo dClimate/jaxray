@@ -10,7 +10,9 @@ import { CID } from "multiformats/cid";
 import { IPFSELEMENTS_INTERFACE } from "./ipfs-elements";
 
 type ChunkCoords = readonly number[];
-type CidLike = string | CID | { toString(): string };
+export type CidLike = string | CID | { toString(): string };
+
+export type ShardReadMode = "full" | "sparse";
 
 type ShardingConfig = {
     chunks_per_shard: number;
@@ -64,6 +66,140 @@ type ParsedChunkKey = {
 
 const ZARR_METADATA_SUFFIXES = ["zarr.json", ".zarray", ".zattrs", ".zgroup", ".zmetadata"];
 
+class CborWalker {
+    private offset = 0;
+
+    public constructor(private readonly bytes: Uint8Array) {}
+
+    public get position(): number {
+        return this.offset;
+    }
+
+    public readByte(): number {
+        if (this.offset >= this.bytes.length) {
+            throw new Error("Malformed CBOR: unexpected end of input.");
+        }
+        return this.bytes[this.offset++];
+    }
+
+    private readArgument(additionalInfo: number): number | bigint {
+        if (additionalInfo < 24) return additionalInfo;
+        const length = additionalInfo === 24 ? 1 : additionalInfo === 25 ? 2 : additionalInfo === 26 ? 4 : additionalInfo === 27 ? 8 : 0;
+        if (length === 0) {
+            if (additionalInfo === 31) {
+                throw new Error("Unsupported indefinite-length CBOR item.");
+            }
+            throw new Error(`Unsupported CBOR additional information: ${additionalInfo}.`);
+        }
+        if (this.offset + length > this.bytes.length) {
+            throw new Error("Malformed CBOR: truncated argument.");
+        }
+        let value = 0n;
+        for (let i = 0; i < length; i++) {
+            value = (value << 8n) | BigInt(this.bytes[this.offset++]);
+        }
+        return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value;
+    }
+
+    public readLength(additionalInfo: number): number {
+        const value = this.readArgument(additionalInfo);
+        if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+            throw new Error("CBOR item length exceeds the supported range.");
+        }
+        return value;
+    }
+
+    public skipItem(): void {
+        const initial = this.readByte();
+        const majorType = initial >> 5;
+        const additionalInfo = initial & 0x1f;
+        switch (majorType) {
+            case 0:
+            case 1:
+                this.readArgument(additionalInfo);
+                return;
+            case 2:
+            case 3:
+                this.skipBytes(this.readLength(additionalInfo));
+                return;
+            case 4: {
+                const length = this.readLength(additionalInfo);
+                for (let i = 0; i < length; i++) this.skipItem();
+                return;
+            }
+            case 5: {
+                const length = this.readLength(additionalInfo);
+                for (let i = 0; i < length * 2; i++) this.skipItem();
+                return;
+            }
+            case 6:
+                this.readArgument(additionalInfo);
+                this.skipItem();
+                return;
+            case 7:
+                this.skipSimpleOrFloat(additionalInfo);
+                return;
+            default:
+                throw new Error(`Unsupported CBOR major type: ${majorType}.`);
+        }
+    }
+
+    private skipBytes(length: number): void {
+        if (this.offset + length > this.bytes.length) {
+            throw new Error("Malformed CBOR: truncated byte or text string.");
+        }
+        this.offset += length;
+    }
+
+    private skipSimpleOrFloat(additionalInfo: number): void {
+        if (additionalInfo === 24) this.skipBytes(1);
+        else if (additionalInfo === 25) this.skipBytes(2);
+        else if (additionalInfo === 26) this.skipBytes(4);
+        else if (additionalInfo === 27) this.skipBytes(8);
+        else if (additionalInfo === 31) throw new Error("Unsupported indefinite-length CBOR item.");
+        else if (additionalInfo >= 24) throw new Error(`Unsupported CBOR simple value: ${additionalInfo}.`);
+    }
+}
+
+/** Decode one entry from a definite-length DAG-CBOR shard list without decoding the other entries. */
+export const decodeShardEntry = (shardBytes: Uint8Array, index: number): CidLike | null => {
+    if (!Number.isInteger(index) || index < 0) {
+        throw new RangeError(`Shard entry index must be non-negative: ${index}.`);
+    }
+
+    const walker = new CborWalker(shardBytes);
+    const header = walker.readByte();
+    if ((header >> 5) !== 4) {
+        throw new TypeError("Shard did not decode to a CBOR list.");
+    }
+    const length = walker.readLength(header & 0x1f);
+    if (index >= length) {
+        throw new RangeError(`Shard entry index ${index} is out of range for list length ${length}.`);
+    }
+
+    for (let i = 0; i < index; i++) walker.skipItem();
+    const itemStart = walker.position;
+    walker.skipItem();
+    const itemBytes = shardBytes.subarray(itemStart, walker.position);
+    let decoded: unknown;
+    try {
+        decoded = dagCbor.decode(itemBytes);
+    } catch {
+        throw new TypeError(`Malformed shard entry at index ${index}.`);
+    }
+    if (decoded === null) return null;
+    if (decoded instanceof CID) return decoded;
+    if (typeof decoded !== "string") {
+        throw new TypeError(`Shard entry at index ${index} is not a CID or null.`);
+    }
+    try {
+        CID.parse(decoded);
+    } catch {
+        throw new TypeError(`Shard entry at index ${index} is not a valid CID.`);
+    }
+    return decoded as CidLike;
+};
+
 /**
  * A read-only Zarr Store implementation that uses a sharded layout for chunk indices.
  *
@@ -73,9 +209,20 @@ const ZARR_METADATA_SUFFIXES = ["zarr.json", ".zarray", ".zattrs", ".zgroup", ".
 export class ShardedStore implements AsyncReadable {
     public readonly readOnly = true;
 
+    /**
+     * Lookups on a single shard past which a full decode + cache beats repeated
+     * sparse per-slot walks. Benchmarked crossover is ~32 across 6k–32k-entry
+     * shards; the promotion "tax" (walks wasted before promoting) grows with the
+     * threshold squared, and typical region reads touch far fewer chunks, so 32
+     * caps the hot-shard cost while leaving light reads on the fast sparse path.
+     */
+    private static readonly SPARSE_PROMOTE_THRESHOLD = 32;
+
     public ipfsElements: IPFSELEMENTS_INTERFACE;
 
     private rootCid: string;
+
+    private shardReadMode: ShardReadMode;
 
     private rootObj?: ShardedRoot;
 
@@ -84,6 +231,9 @@ export class ShardedStore implements AsyncReadable {
     private shardDataCache = new Map<string, (CidLike | null)[]>();
 
     private pendingShardLoads = new Map<string, Promise<void>>();
+
+    // Per-shard sparse-lookup counter driving adaptive promotion to a full decode.
+    private shardAccessCounts = new Map<string, number>();
 
     private metadataCache = new Map<string, Uint8Array>();
 
@@ -104,16 +254,25 @@ export class ShardedStore implements AsyncReadable {
 
     private totalChunks?: number;
 
-    private constructor(rootCid: string, ipfsElements: IPFSELEMENTS_INTERFACE) {
+    private constructor(
+        rootCid: string,
+        ipfsElements: IPFSELEMENTS_INTERFACE,
+        shardReadMode: ShardReadMode = "sparse",
+    ) {
         this.ipfsElements = ipfsElements;
         this.rootCid = rootCid;
+        this.shardReadMode = shardReadMode;
     }
 
-    public static async open(rootCid: string, ipfsElements: IPFSELEMENTS_INTERFACE): Promise<ShardedStore> {
+    public static async open(
+        rootCid: string,
+        ipfsElements: IPFSELEMENTS_INTERFACE,
+        shardReadMode: ShardReadMode = "sparse",
+    ): Promise<ShardedStore> {
         if (!rootCid) {
             throw new Error("A rootCid must be provided to open a read-only store.");
         }
-        const store = new ShardedStore(rootCid, ipfsElements);
+        const store = new ShardedStore(rootCid, ipfsElements, shardReadMode);
         await store.loadRootFromCid();
         return store;
     }
@@ -122,11 +281,12 @@ export class ShardedStore implements AsyncReadable {
         rootCid: string,
         ipfsElements: IPFSELEMENTS_INTERFACE,
         rootObj: ShardedRoot,
+        shardReadMode: ShardReadMode = "sparse",
     ): ShardedStore {
         if (!rootCid) {
             throw new Error("A rootCid must be provided to open a read-only store.");
         }
-        const store = new ShardedStore(rootCid, ipfsElements);
+        const store = new ShardedStore(rootCid, ipfsElements, shardReadMode);
         store.initializeRootObject(rootObj);
         return store;
     }
@@ -414,12 +574,7 @@ export class ShardedStore implements AsyncReadable {
 
         if (shardIdx >= parsedChunk.index.numShards) return undefined;
 
-        const decodedShard = await this.getOrLoadDecodedShard(parsedChunk.index, shardIdx);
-        if (!decodedShard) {
-            return undefined;
-        }
-
-        const chunkCid = decodedShard[indexInShard];
+        const chunkCid = await this.resolveShardEntry(parsedChunk.index, shardIdx, indexInShard);
         if (!chunkCid) {
             return undefined;
         }
@@ -444,10 +599,8 @@ export class ShardedStore implements AsyncReadable {
 
             if (shardIdx >= parsedChunk.index.numShards) return false;
 
-            const decodedShard = await this.getOrLoadDecodedShard(parsedChunk.index, shardIdx);
-            if (!decodedShard) return false;
-
-            return decodedShard[indexInShard] !== null;
+            const entry = await this.resolveShardEntry(parsedChunk.index, shardIdx, indexInShard);
+            return entry !== null && entry !== undefined;
         } catch {
             return false;
         }
@@ -455,6 +608,65 @@ export class ShardedStore implements AsyncReadable {
 
     private shardCacheKey(index: ArrayIndex, shardIdx: number): string {
         return `${index.arrayPath}\0${shardIdx}`;
+    }
+
+    /**
+     * Resolve a single chunk entry, choosing between a sparse per-slot walk and a
+     * full decode + cache. In sparse mode a shard is promoted to a full decode once
+     * it has been read more than SPARSE_PROMOTE_THRESHOLD times, after which the
+     * populated shardDataCache serves all further lookups in O(1).
+     */
+    private async resolveShardEntry(
+        index: ArrayIndex,
+        shardIdx: number,
+        indexInShard: number,
+    ): Promise<CidLike | null | undefined> {
+        const cacheKey = this.shardCacheKey(index, shardIdx);
+
+        // Already decoded (full mode, or a previously-promoted sparse shard) → O(1).
+        const cached = this.shardDataCache.get(cacheKey);
+        if (cached) {
+            return cached[indexInShard];
+        }
+
+        if (this.shardReadMode === "full") {
+            return (await this.getOrLoadDecodedShard(index, shardIdx))?.[indexInShard];
+        }
+
+        // Sparse: promote a hot shard to a one-shot full decode once it crosses the crossover.
+        const hits = (this.shardAccessCounts.get(cacheKey) ?? 0) + 1;
+        if (hits >= ShardedStore.SPARSE_PROMOTE_THRESHOLD) {
+            this.shardAccessCounts.delete(cacheKey);
+            return (await this.getOrLoadDecodedShard(index, shardIdx))?.[indexInShard];
+        }
+        this.shardAccessCounts.set(cacheKey, hits);
+        return this.getSparseShardEntry(index, shardIdx, indexInShard);
+    }
+
+    private async getSparseShardEntry(
+        index: ArrayIndex,
+        shardIdx: number,
+        indexInShard: number,
+    ): Promise<CidLike | null | undefined> {
+        const cacheKey = this.shardCacheKey(index, shardIdx);
+        const cachedShard = this.shardDataCache.get(cacheKey);
+        if (cachedShard) {
+            return cachedShard[indexInShard];
+        }
+
+        const shardCid = index.shardCids[shardIdx];
+        if (!shardCid) {
+            return null;
+        }
+
+        const shardCidStr = String(shardCid);
+        try {
+            const shardBlockBytes = await this.ipfsElements.dagCbor.components.blockstore.get(CID.parse(shardCidStr));
+            return decodeShardEntry(shardBlockBytes, indexInShard);
+        } catch (err) {
+            console.error(`Failed to sparsely decode shard ${shardIdx} (CID: ${shardCidStr}).`, err);
+            return undefined;
+        }
     }
 
     private async getOrLoadDecodedShard(index: ArrayIndex, shardIdx: number): Promise<(CidLike | null)[] | undefined> {

@@ -1,12 +1,37 @@
 import { describe, expect, test, vi, afterEach } from "vitest";
 import * as dagCbor from "@ipld/dag-cbor";
+import { CID } from "multiformats/cid";
 import { detectIpfsStoreType, openIpfsStore } from "../src/backends/ipfs/open-store";
-import { ShardedStore } from "../src/backends/ipfs/sharded-store";
+import { decodeShardEntry, ShardedStore } from "../src/backends/ipfs/sharded-store";
 import { HamtStore } from "../src/backends/ipfs/hamt-store";
 import type { IPFSELEMENTS_INTERFACE } from "../src/backends/ipfs/ipfs-elements";
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("decodeShardEntry", () => {
+  const cids = [
+    "bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+    "bafybeigqno5lcjnsruv4qma5ma2wefeevuzbnz5u7p5wxzfxdrdvuxnqna",
+    "bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+  ].map((value) => CID.parse(value));
+  const raw = dagCbor.encode([cids[0], cids[1], null, cids[2]]);
+
+  test.each([0, 1, 3])("decodes slot %i", (index) => {
+    expect(String(decodeShardEntry(raw, index))).toBe(String(dagCbor.decode(raw)[index]));
+  });
+
+  test("decodes a null slot", () => {
+    expect(decodeShardEntry(raw, 2)).toBeNull();
+  });
+
+  test("rejects invalid indexes and malformed shards", () => {
+    expect(() => decodeShardEntry(raw, -1)).toThrow(/non-negative/);
+    expect(() => decodeShardEntry(raw, 4)).toThrow(/out of range/);
+    expect(() => decodeShardEntry(dagCbor.encode({}), 0)).toThrow(/list/);
+    expect(() => decodeShardEntry(dagCbor.encode(["not-a-cid"]), 0)).toThrow(/CID/);
+  });
 });
 
 function createMockIpfsElements(rootBytes: Uint8Array): IPFSELEMENTS_INTERFACE {
@@ -130,7 +155,105 @@ describe("IPFS store detection", () => {
     await expect(store.get("0/FPAR/zarr.json")).resolves.toEqual(metadataBytes);
     await expect(store.has("0/FPAR/c/0/0" as any)).resolves.toBe(true);
     await expect(store.get("0/FPAR/c/0/0")).resolves.toEqual(chunkBytes);
+    expect((store as any).shardDataCache.size).toBe(0);
     await expect(store.has("1/FPAR/c/0/0" as any)).resolves.toBe(false);
+  });
+
+  test("supports full shard reads and uses a populated full-shard cache", async () => {
+    const shardCid = "bafyr4iacuutc5bgmirkfyzn4igi2wys7e42kkn674hx3c4dv4wrgjp2k2u";
+    const chunkCid = CID.parse("bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku");
+    const shardBytes = dagCbor.encode([chunkCid, null]);
+    const getShard = vi.fn(async () => shardBytes);
+    const ipfsElements: IPFSELEMENTS_INTERFACE = {
+      dagCbor: { components: { blockstore: { get: getShard } } },
+      unixfs: { cat: vi.fn(async function* () { yield new TextEncoder().encode("chunk"); }) },
+    };
+    const store = ShardedStore.fromRootObject("root", ipfsElements, {
+      manifest_version: "sharded_zarr_v2",
+      metadata: {},
+      arrays: {
+        "": {
+          array_shape: [2],
+          chunk_shape: [1],
+          sharding_config: { chunks_per_shard: 2 },
+          shard_cids: [shardCid],
+        },
+      },
+    }, "full");
+
+    await expect(store.get("0")).resolves.toEqual(new TextEncoder().encode("chunk"));
+    await expect(store.get("0")).resolves.toEqual(new TextEncoder().encode("chunk"));
+    expect((store as any).shardDataCache.size).toBe(1);
+    expect(getShard).toHaveBeenCalledTimes(1);
+  });
+
+  test("sparse mode promotes a hot shard to a cached full decode past the threshold", async () => {
+    const threshold = (ShardedStore as any).SPARSE_PROMOTE_THRESHOLD as number;
+    const shardCid = "bafyr4iacuutc5bgmirkfyzn4igi2wys7e42kkn674hx3c4dv4wrgjp2k2u";
+    const chunkCid = CID.parse("bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku");
+    const shardBytes = dagCbor.encode(new Array(threshold).fill(chunkCid));
+    const getShard = vi.fn(async () => shardBytes);
+    const ipfsElements: IPFSELEMENTS_INTERFACE = {
+      dagCbor: { components: { blockstore: { get: getShard } } },
+      unixfs: { cat: vi.fn(async function* () { yield new TextEncoder().encode("chunk"); }) },
+    };
+    // One shard holding `threshold` chunks (default sparse mode).
+    const store = ShardedStore.fromRootObject("root", ipfsElements, {
+      manifest_version: "sharded_zarr_v2",
+      metadata: {},
+      arrays: {
+        "": {
+          array_shape: [threshold],
+          chunk_shape: [1],
+          sharding_config: { chunks_per_shard: threshold },
+          shard_cids: [shardCid],
+        },
+      },
+    });
+
+    // First threshold-1 lookups stay sparse: one blockstore fetch each, cache untouched.
+    for (let i = 0; i < threshold - 1; i++) {
+      await store.get(String(i));
+    }
+    expect((store as any).shardDataCache.size).toBe(0);
+    expect(getShard).toHaveBeenCalledTimes(threshold - 1);
+
+    // The threshold-th lookup promotes: one full decode populates the cache.
+    await store.get(String(threshold - 1));
+    expect((store as any).shardDataCache.size).toBe(1);
+    expect(getShard).toHaveBeenCalledTimes(threshold);
+
+    // Every subsequent lookup is served from the cache — no more blockstore fetches.
+    for (let i = 0; i < 10; i++) {
+      await store.get(String(i));
+    }
+    expect(getShard).toHaveBeenCalledTimes(threshold);
+    expect((store as any).shardAccessCounts.size).toBe(0);
+  });
+
+  test("openIpfsStore forwards shardReadMode", async () => {
+    const rootCid = "bafyr4iacuutc5bgmirkfyzn4igi2wys7e42kkn674hx3c4dv4wrgjp2k2u";
+    const shardCid = "bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
+    const manifest = dagCbor.encode({
+      manifest_version: "sharded_zarr_v2",
+      metadata: {},
+      arrays: {
+        "": {
+          array_shape: [1], chunk_shape: [1],
+          sharding_config: { chunks_per_shard: 1 }, shard_cids: [shardCid],
+        },
+      },
+    });
+    const get = vi.fn(async () => get.mock.calls.length === 1
+      ? manifest
+      : dagCbor.encode([CID.parse(shardCid)]));
+    const ipfsElements: IPFSELEMENTS_INTERFACE = {
+      dagCbor: { components: { blockstore: { get } } },
+      unixfs: { cat: vi.fn(async function* () { yield new Uint8Array(); }) },
+    };
+    const { store } = await openIpfsStore(rootCid, { ipfsElements, shardReadMode: "full" });
+    await store.get("0");
+    expect((store as any).shardDataCache.size).toBe(1);
   });
 
   test("falls back to HAMT store when manifest is absent", async () => {
