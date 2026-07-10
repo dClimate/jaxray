@@ -209,6 +209,15 @@ export const decodeShardEntry = (shardBytes: Uint8Array, index: number): CidLike
 export class ShardedStore implements AsyncReadable {
     public readonly readOnly = true;
 
+    /**
+     * Lookups on a single shard past which a full decode + cache beats repeated
+     * sparse per-slot walks. Benchmarked crossover is ~32 across 6k–32k-entry
+     * shards; the promotion "tax" (walks wasted before promoting) grows with the
+     * threshold squared, and typical region reads touch far fewer chunks, so 32
+     * caps the hot-shard cost while leaving light reads on the fast sparse path.
+     */
+    private static readonly SPARSE_PROMOTE_THRESHOLD = 32;
+
     public ipfsElements: IPFSELEMENTS_INTERFACE;
 
     private rootCid: string;
@@ -222,6 +231,9 @@ export class ShardedStore implements AsyncReadable {
     private shardDataCache = new Map<string, (CidLike | null)[]>();
 
     private pendingShardLoads = new Map<string, Promise<void>>();
+
+    // Per-shard sparse-lookup counter driving adaptive promotion to a full decode.
+    private shardAccessCounts = new Map<string, number>();
 
     private metadataCache = new Map<string, Uint8Array>();
 
@@ -562,9 +574,7 @@ export class ShardedStore implements AsyncReadable {
 
         if (shardIdx >= parsedChunk.index.numShards) return undefined;
 
-        const chunkCid = this.shardReadMode === "sparse"
-            ? await this.getSparseShardEntry(parsedChunk.index, shardIdx, indexInShard)
-            : (await this.getOrLoadDecodedShard(parsedChunk.index, shardIdx))?.[indexInShard];
+        const chunkCid = await this.resolveShardEntry(parsedChunk.index, shardIdx, indexInShard);
         if (!chunkCid) {
             return undefined;
         }
@@ -589,9 +599,7 @@ export class ShardedStore implements AsyncReadable {
 
             if (shardIdx >= parsedChunk.index.numShards) return false;
 
-            const entry = this.shardReadMode === "sparse"
-                ? await this.getSparseShardEntry(parsedChunk.index, shardIdx, indexInShard)
-                : (await this.getOrLoadDecodedShard(parsedChunk.index, shardIdx))?.[indexInShard];
+            const entry = await this.resolveShardEntry(parsedChunk.index, shardIdx, indexInShard);
             return entry !== null && entry !== undefined;
         } catch {
             return false;
@@ -600,6 +608,39 @@ export class ShardedStore implements AsyncReadable {
 
     private shardCacheKey(index: ArrayIndex, shardIdx: number): string {
         return `${index.arrayPath}\0${shardIdx}`;
+    }
+
+    /**
+     * Resolve a single chunk entry, choosing between a sparse per-slot walk and a
+     * full decode + cache. In sparse mode a shard is promoted to a full decode once
+     * it has been read more than SPARSE_PROMOTE_THRESHOLD times, after which the
+     * populated shardDataCache serves all further lookups in O(1).
+     */
+    private async resolveShardEntry(
+        index: ArrayIndex,
+        shardIdx: number,
+        indexInShard: number,
+    ): Promise<CidLike | null | undefined> {
+        const cacheKey = this.shardCacheKey(index, shardIdx);
+
+        // Already decoded (full mode, or a previously-promoted sparse shard) → O(1).
+        const cached = this.shardDataCache.get(cacheKey);
+        if (cached) {
+            return cached[indexInShard];
+        }
+
+        if (this.shardReadMode === "full") {
+            return (await this.getOrLoadDecodedShard(index, shardIdx))?.[indexInShard];
+        }
+
+        // Sparse: promote a hot shard to a one-shot full decode once it crosses the crossover.
+        const hits = (this.shardAccessCounts.get(cacheKey) ?? 0) + 1;
+        if (hits >= ShardedStore.SPARSE_PROMOTE_THRESHOLD) {
+            this.shardAccessCounts.delete(cacheKey);
+            return (await this.getOrLoadDecodedShard(index, shardIdx))?.[indexInShard];
+        }
+        this.shardAccessCounts.set(cacheKey, hits);
+        return this.getSparseShardEntry(index, shardIdx, indexInShard);
     }
 
     private async getSparseShardEntry(

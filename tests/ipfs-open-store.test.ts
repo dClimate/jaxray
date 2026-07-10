@@ -187,6 +187,50 @@ describe("IPFS store detection", () => {
     expect(getShard).toHaveBeenCalledTimes(1);
   });
 
+  test("sparse mode promotes a hot shard to a cached full decode past the threshold", async () => {
+    const threshold = (ShardedStore as any).SPARSE_PROMOTE_THRESHOLD as number;
+    const shardCid = "bafyr4iacuutc5bgmirkfyzn4igi2wys7e42kkn674hx3c4dv4wrgjp2k2u";
+    const chunkCid = CID.parse("bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku");
+    const shardBytes = dagCbor.encode(new Array(threshold).fill(chunkCid));
+    const getShard = vi.fn(async () => shardBytes);
+    const ipfsElements: IPFSELEMENTS_INTERFACE = {
+      dagCbor: { components: { blockstore: { get: getShard } } },
+      unixfs: { cat: vi.fn(async function* () { yield new TextEncoder().encode("chunk"); }) },
+    };
+    // One shard holding `threshold` chunks (default sparse mode).
+    const store = ShardedStore.fromRootObject("root", ipfsElements, {
+      manifest_version: "sharded_zarr_v2",
+      metadata: {},
+      arrays: {
+        "": {
+          array_shape: [threshold],
+          chunk_shape: [1],
+          sharding_config: { chunks_per_shard: threshold },
+          shard_cids: [shardCid],
+        },
+      },
+    });
+
+    // First threshold-1 lookups stay sparse: one blockstore fetch each, cache untouched.
+    for (let i = 0; i < threshold - 1; i++) {
+      await store.get(String(i));
+    }
+    expect((store as any).shardDataCache.size).toBe(0);
+    expect(getShard).toHaveBeenCalledTimes(threshold - 1);
+
+    // The threshold-th lookup promotes: one full decode populates the cache.
+    await store.get(String(threshold - 1));
+    expect((store as any).shardDataCache.size).toBe(1);
+    expect(getShard).toHaveBeenCalledTimes(threshold);
+
+    // Every subsequent lookup is served from the cache — no more blockstore fetches.
+    for (let i = 0; i < 10; i++) {
+      await store.get(String(i));
+    }
+    expect(getShard).toHaveBeenCalledTimes(threshold);
+    expect((store as any).shardAccessCounts.size).toBe(0);
+  });
+
   test("openIpfsStore forwards shardReadMode", async () => {
     const rootCid = "bafyr4iacuutc5bgmirkfyzn4igi2wys7e42kkn674hx3c4dv4wrgjp2k2u";
     const shardCid = "bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku";
