@@ -20,7 +20,8 @@ export type { DataBlock, DataBlockKind } from './core/data-block.js';
 
 // Backends
 export { ZarrBackend, type ZarrStore } from './backends/zarr.js';
-export { ShardedStore } from './backends/ipfs/sharded-store.js';
+export { ShardedStore, decodeShardEntry } from './backends/ipfs/sharded-store.js';
+export type { ShardReadMode } from './backends/ipfs/sharded-store.js';
 export { HamtStore } from './backends/ipfs/hamt-store.js';
 export { createIpfsElements } from './backends/ipfs/ipfs-elements.js';
 export type { IPFSELEMENTS_INTERFACE } from './backends/ipfs/ipfs-elements.js';

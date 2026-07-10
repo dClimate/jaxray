@@ -1,6 +1,6 @@
 import * as dagCbor from "@ipld/dag-cbor";
 import { CID } from "multiformats/cid";
-import { ShardedStore, type ShardedRoot } from "./sharded-store.js";
+import { ShardedStore, type ShardedRoot, type ShardReadMode } from "./sharded-store.js";
 import { HamtStore } from "./hamt-store.js";
 import { IPFSELEMENTS_INTERFACE, createIpfsElements } from "./ipfs-elements.js";
 
@@ -21,6 +21,8 @@ export type OpenStoreOptions = {
    * dClimate public gateway for convenience.
    */
   gatewayUrl?: string;
+  /** How shard entries are read. Defaults to sparse. */
+  shardReadMode?: ShardReadMode;
 };
 
 const isIpfsElements = (value: unknown): value is IPFSELEMENTS_INTERFACE => {
@@ -129,7 +131,13 @@ export const openIpfsStore = async (
   const { rootCid, type, manifest } = await resolveStoreType(cid, ipfsElements);
   if (type === "sharded") {
     const root = typeof cid === "string" ? cid : cid.toString();
-    const store = ShardedStore.fromRootObject(root, ipfsElements, manifest!);
+    const resolvedOptions = toOptions(options);
+    const store = ShardedStore.fromRootObject(
+      root,
+      ipfsElements,
+      manifest!,
+      resolvedOptions.shardReadMode ?? "sparse",
+    );
     return { type: "sharded", store };
   }
   const hamtStore = new HamtStore(rootCid, ipfsElements);
