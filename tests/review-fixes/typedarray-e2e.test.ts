@@ -112,6 +112,21 @@ describe('TypedArray-backed flat storage contract', () => {
     expect(plainBlock.materialize()).toEqual([[10, 11], [12, 13]]);
   });
 
+  test('DataArray constructor distinguishes plain flat payloads from DataArray instances', () => {
+    const fromPayload = new DataArray({
+      data: new Float64Array([1, 2, 3, 4]),
+      shape: [2, 2]
+    }, { dims: ['y', 'x'] });
+    expect(fromPayload.values).toEqual([[1, 2], [3, 4]]);
+    expectTypedFlatData(fromPayload, Float64Array, [2, 2], [1, 2, 3, 4]);
+
+    const source = new DataArray([[1, 2], [3, 4]], { dims: ['y', 'x'] });
+    const fromInstance = new DataArray(source as any);
+    expect(fromInstance.shape).toEqual([]);
+    expect(fromInstance.values).toBe(source);
+    expect(fromInstance.flatData).toBeNull();
+  });
+
   test('flatData exists on eager nested arrays while allowing null', () => {
     const nested = new DataArray([[1, 2], [3, 4]], { dims: ['y', 'x'] });
     const flatData = (nested as any).flatData;
@@ -167,6 +182,32 @@ describe('TypedArray-backed flat storage contract', () => {
       [9, 10, 11]
     ]);
     expectTypedFlatData(selected, Float64Array, [2, 3], [5, 6, 7, 9, 10, 11]);
+  });
+
+  test('one-sided label slices keep data, shape, and coordinates aligned for typed and nested arrays', async () => {
+    const options = {
+      dims: ['y', 'x'],
+      coords: { y: ['top', 'bottom'], x: ['a', 'b', 'c', 'd'] }
+    };
+    const sources = [
+      new DataArray({
+        data: new Float64Array([0, 1, 2, 3, 4, 5, 6, 7]),
+        shape: [2, 4]
+      }, options),
+      new DataArray([[0, 1, 2, 3], [4, 5, 6, 7]], options)
+    ];
+
+    for (const source of sources) {
+      const throughStop = await source.sel({ x: { stop: 'b' } });
+      expect(throughStop.values).toEqual([[0, 1], [4, 5]]);
+      expect(throughStop.shape).toEqual([2, 2]);
+      expect(throughStop.coords.x).toEqual(['a', 'b']);
+
+      const fromStart = await source.sel({ x: { start: 'c' } });
+      expect(fromStart.values).toEqual([[2, 3], [6, 7]]);
+      expect(fromStart.shape).toEqual([2, 2]);
+      expect(fromStart.coords.x).toEqual(['c', 'd']);
+    }
   });
 
   test('isel preserves typed backing and row-major order for discrete selections', async () => {
@@ -238,6 +279,88 @@ describe('TypedArray-backed flat storage contract', () => {
     expect((computed.mean('row') as DataArray).values).toEqual([
       [5, 6, 7, 8],
       [17, 18, 19, 20]
+    ]);
+  });
+
+  test('sum uses zero identity for empty typed dimensions while mean remains NaN', async () => {
+    const source = new DataArray({
+      data: new Float64Array([1, 2, 3, 4, 5, 6]),
+      shape: [2, 3]
+    }, { dims: ['y', 'x'] });
+
+    const emptyLeading = await source.isel({ y: [] });
+    expect(emptyLeading.shape).toEqual([0, 3]);
+    expect((emptyLeading.sum('y') as DataArray).values).toEqual([0, 0, 0]);
+    expect((emptyLeading.mean('y') as DataArray).values).toEqual([NaN, NaN, NaN]);
+
+    const emptyTrailing = await source.isel({ x: [] });
+    expect(emptyTrailing.shape).toEqual([2, 0]);
+    expect((emptyTrailing.sum('x') as DataArray).values).toEqual([0, 0]);
+  });
+
+  test('lazy multi-run flat stitching preserves unsorted and multi-dimensional selections', async () => {
+    type IndexRange = { start: number; stop: number } | number;
+    const loaderCalls: Array<Record<string, IndexRange>> = [];
+    const dimensionIndices = (range: IndexRange): number[] =>
+      typeof range === 'number'
+        ? [range]
+        : Array.from({ length: range.stop - range.start }, (_, index) => range.start + index);
+
+    const loader = async (ranges: Record<string, IndexRange>) => {
+      loaderCalls.push({ ...ranges });
+      const pointIndices = dimensionIndices(ranges.point);
+      const rowIndices = dimensionIndices(ranges.row);
+      const colIndices = dimensionIndices(ranges.col);
+      const data = new Float64Array(pointIndices.length * rowIndices.length * colIndices.length);
+      let offset = 0;
+      for (const point of pointIndices) {
+        for (const row of rowIndices) {
+          for (const col of colIndices) {
+            data[offset++] = point * 10_000 + row * 100 + col;
+          }
+        }
+      }
+      const shape = [
+        typeof ranges.point === 'number' ? null : pointIndices.length,
+        typeof ranges.row === 'number' ? null : rowIndices.length,
+        typeof ranges.col === 'number' ? null : colIndices.length
+      ].filter((size): size is number => size !== null);
+      return { data, shape };
+    };
+
+    const lazy = new DataArray(null, {
+      lazy: true,
+      virtualShape: [2, 40, 3],
+      lazyLoader: loader,
+      dims: ['point', 'row', 'col'],
+      coords: {
+        point: [0, 1],
+        row: Array.from({ length: 40 }, (_, index) => index),
+        col: [0, 1, 2]
+      }
+    });
+    const selected = await lazy.isel({
+      point: 1,
+      row: [39, 0, 20],
+      col: [2, 0]
+    });
+    const computed = await selected.compute();
+
+    expect(computed.values).toEqual([
+      [13902, 13900],
+      [10002, 10000],
+      [12002, 12000]
+    ]);
+    expect(computed.dims).toEqual(['row', 'col']);
+    expect(computed.coords).toEqual({ row: [39, 0, 20], col: [2, 0] });
+    expect(Array.from(requireFlatData(computed).data)).toEqual([
+      13902, 13900, 10002, 10000, 12002, 12000
+    ]);
+    expect(loaderCalls).toHaveLength(3);
+    expect(loaderCalls.map(call => call.row)).toEqual([
+      { start: 0, stop: 1 },
+      { start: 20, stop: 21 },
+      { start: 39, stop: 40 }
     ]);
   });
 

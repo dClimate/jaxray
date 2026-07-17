@@ -192,13 +192,19 @@ export class DataArray {
   }
 
   /**
-   * Get the values (alias for data)
+   * Get the values (alias for data). Flat-backed arrays cache this as a nested
+   * snapshot separate from `flatData`; both views are read-only by contract and
+   * must not be mutated.
    */
   get values(): NDArray {
     return this.data;
   }
 
-  /** Row-major storage when this eager array was constructed from flat data. */
+  /**
+   * Live row-major storage when this eager array was constructed from flat data.
+   * This may coexist with a separately cached nested `values` snapshot; both
+   * views are read-only by contract and must not be mutated.
+   */
   get flatData(): FlatData | null {
     if (isLazyBlock(this._block)) return null;
     return this._block.flatData;
@@ -349,7 +355,7 @@ export class DataArray {
           const sel = selection[dim];
           if (Array.isArray(sel)) {
             newCoords[dim] = selectedIndices[dim].map(index => this._coords[dim][index]);
-          } else if (typeof sel === 'object' && 'start' in sel) {
+          } else if (sel && typeof sel === 'object' && ('start' in sel || 'stop' in sel)) {
             const { start, stop } = sel;
             const coordSlice = this._getCoordinateSlice(dim, start, stop, options);
             newCoords[dim] = coordSlice;
@@ -422,7 +428,7 @@ export class DataArray {
       const indices = dimSelection.map(v => findCoordinateIndex(this._coords[chunkDim], v, { method, tolerance }, chunkDim, chunkDimAttrs));
       startIdx = Math.min(...indices);
       endIdx = Math.max(...indices);
-    } else if (typeof dimSelection === 'object' && 'start' in dimSelection) {
+    } else if (dimSelection && typeof dimSelection === 'object' && ('start' in dimSelection || 'stop' in dimSelection)) {
       // Slice selection
       const { start, stop } = dimSelection;
       startIdx = start !== undefined ? findCoordinateIndex(this._coords[chunkDim], start, { method, tolerance }, chunkDim, chunkDimAttrs) : 0;
@@ -1491,7 +1497,7 @@ export class DataArray {
         const indices = sel.map(v => findCoordinateIndex(this._coords[dim], v, options, dim, dimAttrs));
         if (selectedIndices) selectedIndices[dim] = indices;
         result = selectMultipleAtDimension(result, currentDimIndex, indices);
-      } else if (typeof sel === 'object' && 'start' in sel) {
+      } else if (sel && typeof sel === 'object' && ('start' in sel || 'stop' in sel)) {
         // Slice selection
         const { start, stop } = sel;
         const coordAttrs = (this._attrs as any)?._coordAttrs;
@@ -1572,7 +1578,7 @@ export class DataArray {
     // Prefer dimensions with range selections
     for (const dim of this._dims) {
       const sel = selection[dim];
-      if (Array.isArray(sel) || (typeof sel === 'object' && 'start' in sel)) {
+      if (Array.isArray(sel) || (sel && typeof sel === 'object' && ('start' in sel || 'stop' in sel))) {
         return dim;
       }
     }

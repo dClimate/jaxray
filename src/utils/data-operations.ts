@@ -100,7 +100,11 @@ export function reduceFlatAlongDimension(
       outputDim--;
     }
 
-    const startAtFirstValue = operation === 'sum' && dimIndex === 0 && source.shape.length > 1;
+    const reducedDimensionIsEmpty = source.shape[dimIndex] === 0;
+    const startAtFirstValue = operation === 'sum' &&
+      dimIndex === 0 &&
+      source.shape.length > 1 &&
+      !reducedDimensionIsEmpty;
     let sum: any = startAtFirstValue
       ? source.data[sourceBaseOffset]
       : 0;

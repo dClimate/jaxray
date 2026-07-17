@@ -41,13 +41,14 @@ function expectedSize(shape: number[]): number {
 }
 
 export function isFlatData(value: DataArrayInput | unknown): value is FlatData {
-  return Boolean(
-    value &&
-    typeof value === 'object' &&
-    'data' in value &&
-    'shape' in value &&
-    Array.isArray((value as FlatData).shape)
-  );
+  if (!value || typeof value !== 'object' || value.constructor !== Object) {
+    return false;
+  }
+
+  const { data, shape } = value as FlatData;
+  const hasFlatStorage = Array.isArray(data) ||
+    (ArrayBuffer.isView(data) && !(data instanceof DataView));
+  return hasFlatStorage && Array.isArray(shape);
 }
 
 function isTypedStorage(data: ArrayLike<DataValue>): boolean {
