@@ -19,7 +19,7 @@ export function sumAll(data: NDArray): number {
       for (let i = current.length - 1; i >= 0; i--) {
         stack.push(current[i]);
       }
-    } else if (typeof current === 'number') {
+    } else if (typeof current === 'number' && !Number.isNaN(current)) {
       sum += current;
     }
   }
@@ -28,7 +28,7 @@ export function sumAll(data: NDArray): number {
 }
 
 /**
- * Count all elements in N-dimensional array without flattening - O(n) time, O(1) extra space
+ * Count all valid numeric elements in N-dimensional array without flattening - O(n) time, O(1) extra space
  */
 export function countAll(data: NDArray): number {
   let count = 0;
@@ -40,12 +40,50 @@ export function countAll(data: NDArray): number {
       for (let i = current.length - 1; i >= 0; i--) {
         stack.push(current[i]);
       }
-    } else {
+    } else if (typeof current === 'number' && !Number.isNaN(current)) {
       count++;
     }
   }
 
   return count;
+}
+
+/**
+ * Compute the mean along a dimension, skipping non-numeric and NaN values.
+ */
+export function meanAlongDimension(data: NDArray, dimIndex: number): NDArray {
+  if (!Array.isArray(data)) {
+    return Number.NaN;
+  }
+
+  if (dimIndex > 0) {
+    return data.map(item => meanAlongDimension(item, dimIndex - 1)) as NDArray;
+  }
+
+  const meanAcrossFirstDimension = (values: any[]): any => {
+    if (values.length === 0) {
+      return Number.NaN;
+    }
+
+    if (Array.isArray(values[0])) {
+      return values[0].map((_: any, index: number) =>
+        meanAcrossFirstDimension(values.map(value => value[index]))
+      );
+    }
+
+    let sum = 0;
+    let count = 0;
+    for (const value of values) {
+      if (typeof value === 'number' && !Number.isNaN(value)) {
+        sum += value;
+        count++;
+      }
+    }
+
+    return count === 0 ? Number.NaN : sum / count;
+  };
+
+  return meanAcrossFirstDimension(data);
 }
 
 /**

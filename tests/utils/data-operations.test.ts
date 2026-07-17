@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   sumAll,
   countAll,
+  meanAlongDimension,
   divideArray,
   elementWiseOp,
   reshapeSqueezed,
@@ -54,6 +55,11 @@ describe('sumAll', () => {
     const data = [-1, -2, 3, 4];
     expect(sumAll(data)).toBe(4);
   });
+
+  it('should skip null and NaN values', () => {
+    const data = [1, null, Number.NaN, 2];
+    expect(sumAll(data)).toBe(3);
+  });
 });
 
 describe('countAll', () => {
@@ -88,6 +94,27 @@ describe('countAll', () => {
   it('should count arrays with mixed dimensions', () => {
     const data = [[1, 2, 3], [4, 5]];
     expect(countAll(data)).toBe(5);
+  });
+
+  it('should count only valid numeric values', () => {
+    const data = [1, null, Number.NaN, '2', false];
+    expect(countAll(data)).toBe(1);
+  });
+});
+
+describe('meanAlongDimension', () => {
+  it('should use a valid count for each cell', () => {
+    const data = [[1, null, Number.NaN], [3, null, 5]];
+    const result = meanAlongDimension(data, 0) as number[];
+
+    expect(result[0]).toBe(2);
+    expect(result[1]).toBeNaN();
+    expect(result[2]).toBe(5);
+  });
+
+  it('should skip invalid values when reducing a later dimension', () => {
+    const data = [[1, null, 3], [null, Number.NaN, 6]];
+    expect(meanAlongDimension(data, 1)).toEqual([2, 6]);
   });
 });
 
