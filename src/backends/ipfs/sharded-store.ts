@@ -601,8 +601,8 @@ export class ShardedStore implements AsyncReadable {
 
             const entry = await this.resolveShardEntry(parsedChunk.index, shardIdx, indexInShard);
             return entry !== null && entry !== undefined;
-        } catch {
-            return false;
+        } catch (err) {
+            throw err;
         }
     }
 
@@ -665,7 +665,7 @@ export class ShardedStore implements AsyncReadable {
             return decodeShardEntry(shardBlockBytes, indexInShard);
         } catch (err) {
             console.error(`Failed to sparsely decode shard ${shardIdx} (CID: ${shardCidStr}).`, err);
-            return undefined;
+            throw err;
         }
     }
 
@@ -693,7 +693,7 @@ export class ShardedStore implements AsyncReadable {
             return this.shardDataCache.get(cacheKey);
         } catch (err) {
             console.error(`Failed to load shard ${shardIdx} (CID: ${shardCidStr}).`, err);
-            return undefined;
+            throw err;
         }
     }
 
