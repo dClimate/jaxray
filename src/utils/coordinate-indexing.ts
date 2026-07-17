@@ -66,7 +66,8 @@ export function findCoordinateIndex(
       const parsed = parseUnits();
       if (!parsed) return undefined;
       let inputStr = val;
-      if (!inputStr.endsWith('Z') && !inputStr.includes('+')) {
+      const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(inputStr);
+      if (!hasTimezone) {
         inputStr = `${inputStr}Z`;
       }
       const asDate = new Date(inputStr);
@@ -117,7 +118,7 @@ export function findCoordinateIndex(
       let index: number;
       switch (method) {
         case 'nearest':
-          index = Math.round(rawIndex);
+          index = Math.min(Math.max(Math.round(rawIndex), 0), coords.length - 1);
           break;
         case 'ffill':
         case 'pad':
@@ -131,9 +132,20 @@ export function findCoordinateIndex(
         case undefined:
           // Exact match - check if close to integer
           const roundedIndex = Math.round(rawIndex);
-          const indexTolerance = tolerance !== undefined ? tolerance / Math.abs(step) : 1e-3;
-          if (Math.abs(rawIndex - roundedIndex) > indexTolerance) {
-            throw new Error(`Coordinate value '${value}' not found in dimension '${dim}' (no exact match)`);
+          if (tolerance !== undefined) {
+            const indexTolerance = tolerance / Math.abs(step);
+            if (Math.abs(rawIndex - roundedIndex) > indexTolerance) {
+              throw new Error(`Coordinate value '${value}' not found in dimension '${dim}' (no exact match)`);
+            }
+          } else if (roundedIndex >= 0 && roundedIndex < numCoords.length) {
+            const actualValue = numCoords[roundedIndex];
+            const roundingTolerance = Math.min(
+              (Math.max(Math.abs(numericValue), Math.abs(actualValue)) + Math.abs(step)) * Number.EPSILON * 8,
+              Math.abs(step) * 1e-9
+            );
+            if (Math.abs(numericValue - actualValue) > roundingTolerance) {
+              throw new Error(`Coordinate value '${value}' not found in dimension '${dim}' (no exact match)`);
+            }
           }
           index = roundedIndex;
           break;
@@ -207,11 +219,21 @@ export function findIndexFallback(
   }
 
   const index = coords.indexOf(value);
-  if (index === -1) {
-    throw new Error(`Coordinate value '${value}' not found in dimension`);
+  if (index !== -1) {
+    return index;
   }
 
-  return index;
+  if (typeof value === 'string') {
+    const { numValue, numCoords } = toNumericForComparison(value, coords);
+    if (numValue !== undefined && numCoords) {
+      const dateIndex = numCoords.indexOf(numValue);
+      if (dateIndex !== -1) {
+        return dateIndex;
+      }
+    }
+  }
+
+  throw new Error(`Coordinate value '${value}' not found in dimension`);
 }
 
 /**
@@ -334,7 +356,7 @@ export function findFfillIndex(
         throw new Error(`No coordinate <= ${value} for forward fill`);
       }
 
-      const minDiff = value - numCoords[lastValidIndex];
+      const minDiff = Math.abs(value - numCoords[lastValidIndex]);
       if (tolerance !== undefined && minDiff > tolerance) {
         throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
       }
@@ -346,11 +368,14 @@ export function findFfillIndex(
   // Fallback to linear search
   let lastValidIndex = -1;
   let minDiff = Infinity;
+  const descending = numCoords.length > 1 &&
+    numCoords[0] > numCoords[numCoords.length - 1] &&
+    isCoordsSorted(numCoords);
 
   for (let i = 0; i < numCoords.length; i++) {
     const coordValue = numCoords[i];
-    if (coordValue <= value) {
-      const diff = value - coordValue;
+    if (descending ? coordValue >= value : coordValue <= value) {
+      const diff = Math.abs(value - coordValue);
       if (diff < minDiff) {
         minDiff = diff;
         lastValidIndex = i;
@@ -400,7 +425,7 @@ export function findBfillIndex(
         throw new Error(`No coordinate >= ${value} for backward fill`);
       }
 
-      const minDiff = numCoords[firstValidIndex] - value;
+      const minDiff = Math.abs(numCoords[firstValidIndex] - value);
       if (tolerance !== undefined && minDiff > tolerance) {
         throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
       }
@@ -412,11 +437,14 @@ export function findBfillIndex(
   // Fallback to linear search
   let firstValidIndex = -1;
   let minDiff = Infinity;
+  const descending = numCoords.length > 1 &&
+    numCoords[0] > numCoords[numCoords.length - 1] &&
+    isCoordsSorted(numCoords);
 
   for (let i = 0; i < numCoords.length; i++) {
     const coordValue = numCoords[i];
-    if (coordValue >= value) {
-      const diff = coordValue - value;
+    if (descending ? coordValue <= value : coordValue >= value) {
+      const diff = Math.abs(coordValue - value);
       if (diff < minDiff) {
         minDiff = diff;
         firstValidIndex = i;
@@ -471,16 +499,19 @@ function findFfillIndexNumeric(numCoords: number[], value: number, tolerance?: n
     const ascending = numCoords.length < 2 || numCoords[1] >= numCoords[0];
     const lastValidIndex = binarySearchFfill(numCoords, value, ascending);
     if (lastValidIndex === -1) throw new Error(`No coordinate <= ${value} for forward fill`);
-    if (tolerance !== undefined && (value - numCoords[lastValidIndex]) > tolerance) {
+    if (tolerance !== undefined && Math.abs(value - numCoords[lastValidIndex]) > tolerance) {
       throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
     }
     return lastValidIndex;
   }
   let lastValidIndex = -1;
   let minDiff = Infinity;
+  const descending = numCoords.length > 1 &&
+    numCoords[0] > numCoords[numCoords.length - 1] &&
+    isCoordsSorted(numCoords);
   for (let i = 0; i < numCoords.length; i++) {
-    if (numCoords[i] <= value) {
-      const diff = value - numCoords[i];
+    if (descending ? numCoords[i] >= value : numCoords[i] <= value) {
+      const diff = Math.abs(value - numCoords[i]);
       if (diff < minDiff) { minDiff = diff; lastValidIndex = i; }
     }
   }
@@ -499,16 +530,19 @@ function findBfillIndexNumeric(numCoords: number[], value: number, tolerance?: n
     const ascending = numCoords.length < 2 || numCoords[1] >= numCoords[0];
     const firstValidIndex = binarySearchBfill(numCoords, value, ascending);
     if (firstValidIndex === -1) throw new Error(`No coordinate >= ${value} for backward fill`);
-    if (tolerance !== undefined && (numCoords[firstValidIndex] - value) > tolerance) {
+    if (tolerance !== undefined && Math.abs(numCoords[firstValidIndex] - value) > tolerance) {
       throw new Error(`No coordinate within tolerance ${tolerance} of value ${value}`);
     }
     return firstValidIndex;
   }
   let firstValidIndex = -1;
   let minDiff = Infinity;
+  const descending = numCoords.length > 1 &&
+    numCoords[0] > numCoords[numCoords.length - 1] &&
+    isCoordsSorted(numCoords);
   for (let i = 0; i < numCoords.length; i++) {
-    if (numCoords[i] >= value) {
-      const diff = numCoords[i] - value;
+    if (descending ? numCoords[i] <= value : numCoords[i] >= value) {
+      const diff = Math.abs(numCoords[i] - value);
       if (diff < minDiff) { minDiff = diff; firstValidIndex = i; }
     }
   }
@@ -596,17 +630,17 @@ export function binarySearchFfill(sorted: number[], target: number, ascending: b
       }
     }
   } else {
-    // Descending: find smallest value <= target (happens later in array)
+    // Descending: find the last position whose value is >= target
     let left = 0;
     let right = sorted.length - 1;
 
     while (left <= right) {
       const mid = Math.floor((left + right) / 2);
-      if (sorted[mid] <= target) {
+      if (sorted[mid] >= target) {
         result = mid;
-        right = mid - 1; // Continue searching left for smaller values still <= target
-      } else {
         left = mid + 1;
+      } else {
+        right = mid - 1;
       }
     }
   }
@@ -635,17 +669,17 @@ export function binarySearchBfill(sorted: number[], target: number, ascending: b
       }
     }
   } else {
-    // Descending: find largest value >= target (happens earlier in array)
+    // Descending: find the first position whose value is <= target
     let left = 0;
     let right = sorted.length - 1;
 
     while (left <= right) {
       const mid = Math.floor((left + right) / 2);
-      if (sorted[mid] >= target) {
+      if (sorted[mid] <= target) {
         result = mid;
-        left = mid + 1; // Continue searching right for larger values still >= target
-      } else {
         right = mid - 1;
+      } else {
+        left = mid + 1;
       }
     }
   }
