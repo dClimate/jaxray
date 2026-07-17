@@ -22,6 +22,24 @@ interface CoordinateNumericCacheEntry {
  */
 const coordinateNumericCache = new WeakMap<CoordinateValue[], CoordinateNumericCacheEntry>();
 
+function parseDateStringAsUTC(value: string): Date {
+  let normalized = value.trim();
+
+  if (!normalized.includes('T') && normalized.includes(' ')) {
+    const parts = normalized.split(/\s+/);
+    if (parts.length >= 2) {
+      normalized = `${parts[0]}T${parts[1]}`;
+    }
+  }
+
+  const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(normalized);
+  if (!hasTimezone && normalized.includes('T')) {
+    normalized = `${normalized}Z`;
+  }
+
+  return new Date(normalized);
+}
+
 /**
  * Find the index of a coordinate value in a coordinate array
  * Supports exact match, nearest, forward fill, and backward fill methods
@@ -284,7 +302,7 @@ export function findNearestIndex(
 ): number {
   // Convert Date values and Date/ISO-string coords to numeric (ms) for comparison
   const numValue = value instanceof Date ? value.getTime() :
-    typeof value === 'string' ? (() => { const d = new Date(value); return Number.isNaN(d.getTime()) ? undefined : d.getTime(); })() :
+    typeof value === 'string' ? (() => { const d = parseDateStringAsUTC(value); return Number.isNaN(d.getTime()) ? undefined : d.getTime(); })() :
     typeof value === 'number' ? value : undefined;
 
   if (numValue !== undefined) {
@@ -294,7 +312,7 @@ export function findNearestIndex(
       if (typeof c === 'number') { numCoords.push(c); }
       else if (c instanceof Date) { numCoords.push(c.getTime()); }
       else if (typeof c === 'string') {
-        const d = new Date(c);
+        const d = parseDateStringAsUTC(c);
         if (!Number.isNaN(d.getTime())) { numCoords.push(d.getTime()); }
         else { allNumeric = false; break; }
       } else { allNumeric = false; break; }
@@ -509,7 +527,7 @@ function toNumericForComparison(
   coords: CoordinateValue[]
 ): { numValue: number | undefined; numCoords: number[] | undefined } {
   const numValue = value instanceof Date ? value.getTime() :
-    typeof value === 'string' ? (() => { const d = new Date(value); return Number.isNaN(d.getTime()) ? undefined : d.getTime(); })() :
+    typeof value === 'string' ? (() => { const d = parseDateStringAsUTC(value); return Number.isNaN(d.getTime()) ? undefined : d.getTime(); })() :
     undefined;
 
   if (numValue === undefined) return { numValue: undefined, numCoords: undefined };
@@ -519,7 +537,7 @@ function toNumericForComparison(
     if (typeof c === 'number') { numCoords.push(c); }
     else if (c instanceof Date) { numCoords.push(c.getTime()); }
     else if (typeof c === 'string') {
-      const d = new Date(c);
+      const d = parseDateStringAsUTC(c);
       if (!Number.isNaN(d.getTime())) { numCoords.push(d.getTime()); }
       else { return { numValue: undefined, numCoords: undefined }; }
     } else { return { numValue: undefined, numCoords: undefined }; }
