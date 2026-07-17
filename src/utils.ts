@@ -102,6 +102,44 @@ export function reshape(data: DataValue[], shape: number[]): NDArray {
 }
 
 /**
+ * Reshape a flat array (plain or TypedArray) into a nested array without
+ * materializing an intermediate flat copy or per-level slice copies.
+ * Rows are built directly from the flat buffer in a single pass.
+ */
+export function reshapeFlat(flat: ArrayLike<any>, shape: number[]): NDArray {
+  if (shape.length === 0) {
+    return (flat as any)[0];
+  }
+
+  const isTyped = ArrayBuffer.isView(flat);
+  const lastDim = shape.length - 1;
+  const strides = new Array(shape.length);
+  strides[lastDim] = 1;
+  for (let dim = lastDim - 1; dim >= 0; dim--) {
+    strides[dim] = strides[dim + 1] * shape[dim + 1];
+  }
+
+  const build = (offset: number, dim: number): any => {
+    const size = shape[dim];
+    if (dim === lastDim) {
+      if (isTyped) {
+        return Array.from((flat as any).subarray(offset, offset + size));
+      }
+      return (flat as any).slice(offset, offset + size);
+    }
+
+    const stride = strides[dim];
+    const result = new Array(size);
+    for (let index = 0; index < size; index++) {
+      result[index] = build(offset + index * stride, dim + 1);
+    }
+    return result;
+  };
+
+  return build(0, 0) as NDArray;
+}
+
+/**
  * Get element at index from multi-dimensional array
  */
 export function getAtIndex(data: NDArray, indices: number[]): DataValue {

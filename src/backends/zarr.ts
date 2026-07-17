@@ -2,7 +2,7 @@
 import * as zarr from "zarrita";
 import { Dataset } from "../Dataset.js";
 import { DataArray } from "../DataArray.js";
-import { reshape } from "../utils.js";
+import { reshapeFlat } from "../utils.js";
 import { DataValue, NDArray } from "../types.js";
 import { cfTimeToDate, isTimeCoordinate } from "../time/cf-time.js";
 
@@ -295,9 +295,27 @@ export class ZarrBackend {
         }
       });
 
+      function openArray() {
+        return zarr.open(zarrGroup.resolve(arr.relativePath), { kind: "array" });
+      }
+
+      let arrayNodePromise: ReturnType<typeof openArray> | undefined;
+      const getArrayNode = () => {
+        if (!arrayNodePromise) {
+          const pendingOpen = openArray();
+          arrayNodePromise = pendingOpen;
+          void pendingOpen.catch(() => {
+            if (arrayNodePromise === pendingOpen) {
+              arrayNodePromise = undefined;
+            }
+          });
+        }
+        return arrayNodePromise;
+      };
+
       // Create a lazy loader function that the DataArray can call
       const lazyLoader = async (indexRanges: { [dim: string]: { start: number; stop: number } | number }) => {
-        const arrNode = await zarr.open(zarrGroup.resolve(arr.relativePath), { kind: 'array'});
+        const arrNode = await getArrayNode();
         // Build zarr selection
         const zarrSelection: (number | any | null)[] = [];
         for (const dim of arr.dims) {
@@ -328,11 +346,10 @@ export class ZarrBackend {
           return scalarValue as unknown as DataValue;
         }
 
-        // Handle array result
-        const flatData = Array.from(result.data || result) as DataValue[];
-
-        // Reshape to nested array using utility function
-        return reshape(flatData, resultShape);
+        // Handle array result: reshape directly from the decoded (typed) array,
+        // avoiding a boxed Array.from copy of the whole selection.
+        const flatData = (result.data !== undefined ? result.data : result) as ArrayLike<DataValue>;
+        return reshapeFlat(flatData, resultShape);
       };
 
       dataVars[arr.name] = new DataArray(null, {
