@@ -273,7 +273,19 @@ export class KuboCAS extends ContentAddressedStore {
           const text = await res.text().catch(() => "");
           throw new Error(`Kubo gateway load failed: ${res.status} ${res.statusText} ${text}`);
         }
+        const rangeRequested = headers["Range"] != null;
+        if (rangeRequested && res.status !== 200 && res.status !== 206) {
+          throw new Error(`Kubo gateway ranged load failed: unexpected status ${res.status} ${res.statusText}`);
+        }
         const buf = new Uint8Array(await res.arrayBuffer());
+        if (rangeRequested && res.status === 200) {
+          if (offset != null) {
+            return length != null ? buf.slice(offset, offset + length) : buf.slice(offset);
+          }
+          if (suffix != null) {
+            return buf.slice(Math.max(buf.length - suffix, 0));
+          }
+        }
         return buf;
       });
     });
