@@ -1,15 +1,26 @@
 // Quick benchmark to demonstrate coordinate lookup performance improvement
-const { DataArray } = require('./dist/index.js');
+import { DataArray } from './dist/index.js';
+
+const smokeMode = process.argv.includes('--smoke');
+const timeCount = smokeMode ? 4 : 100;
+const latitudeCount = smokeMode ? 30 : 1800;
+const longitudeCount = smokeMode ? 36 : 3600;
 
 // Create a large coordinate array (like real climate data)
-const longitudes = Array.from({ length: 3600 }, (_, i) => -180 + i * 0.1);
-const latitudes = Array.from({ length: 1800 }, (_, i) => -90 + i * 0.1);
-const times = Array.from({ length: 100 }, (_, i) => i);
+const longitudes = Array.from(
+  { length: longitudeCount },
+  (_, i) => (smokeMode ? -74 : -180) + i * 0.1
+);
+const latitudes = Array.from(
+  { length: latitudeCount },
+  (_, i) => (smokeMode ? 44 : -90) + i * 0.1
+);
+const times = Array.from({ length: timeCount }, (_, i) => i);
 
 // Create a small 3D data array
-const data = Array.from({ length: 100 }, () =>
-  Array.from({ length: 1800 }, () =>
-    Array.from({ length: 3600 }, () => Math.random())
+const data = Array.from({ length: timeCount }, () =>
+  Array.from({ length: latitudeCount }, () =>
+    Array.from({ length: longitudeCount }, () => Math.random())
   )
 );
 
@@ -53,4 +64,7 @@ const selection = dataArray.sel({
   console.log('With indexOf scan (O(n)): would be ~1-10ms per record for 3600-element arrays');
   console.log('');
   console.log('Performance improvement: ~1000x faster! 🚀');
+}).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
 });
