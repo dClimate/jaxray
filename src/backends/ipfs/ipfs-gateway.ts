@@ -59,9 +59,29 @@ const RETRYABLE_NETWORK_CODES = new Set([
   "UND_ERR_BODY_TIMEOUT",
 ]);
 
+class HTTPStatusError extends Error {
+  readonly status: number;
+  readonly retryAfterSeconds?: number;
+
+  constructor(message: string, status: number, retryAfter: string | null) {
+    super(message);
+    this.name = "HTTPStatusError";
+    this.status = status;
+
+    const value = retryAfter?.trim();
+    if (value && /^\d+$/.test(value)) {
+      this.retryAfterSeconds = Math.min(Number.parseInt(value, 10), 30);
+    }
+  }
+}
+
 function isRetryableNetworkError(err: unknown, seen = new Set<unknown>()): boolean {
   if (!err || seen.has(err)) return false;
   seen.add(err);
+
+  if (err instanceof HTTPStatusError) {
+    return err.status >= 500 || err.status === 429;
+  }
 
   const error = err as {
     name?: string;
@@ -203,9 +223,14 @@ export class KuboCAS extends ContentAddressedStore {
         if (!isRetryableNetworkError(err) || attempt > this.maxRetries) {
           throw err;
         }
-        const delay = this.initialDelay * Math.pow(this.backoffFactor, attempt - 1);
-        const jitter = delay * 0.1 * (Math.random() - 0.5);
-        await new Promise((r) => setTimeout(r, (delay + jitter) * 1000));
+        let delay: number;
+        if (err instanceof HTTPStatusError && err.retryAfterSeconds !== undefined) {
+          delay = err.retryAfterSeconds;
+        } else {
+          delay = this.initialDelay * Math.pow(this.backoffFactor, attempt - 1);
+          delay += delay * 0.1 * (Math.random() - 0.5);
+        }
+        await new Promise((r) => setTimeout(r, delay * 1000));
       }
     }
     throw new Error("Exited the retry loop unexpectedly.");
@@ -227,7 +252,11 @@ export class KuboCAS extends ContentAddressedStore {
 
         if (!res.ok) {
           const text = await res.text().catch(() => "");
-          throw new Error(`Kubo add failed: ${res.status} ${res.statusText} ${text}`);
+          throw new HTTPStatusError(
+            `Kubo add failed: ${res.status} ${res.statusText} ${text}`,
+            res.status,
+            res.headers.get("Retry-After")
+          );
         }
         const json = await res.json() as { Hash: string };
         const cidStr: string = json["Hash"];
@@ -271,7 +300,11 @@ export class KuboCAS extends ContentAddressedStore {
         });
         if (!res.ok) {
           const text = await res.text().catch(() => "");
-          throw new Error(`Kubo gateway load failed: ${res.status} ${res.statusText} ${text}`);
+          throw new HTTPStatusError(
+            `Kubo gateway load failed: ${res.status} ${res.statusText} ${text}`,
+            res.status,
+            res.headers.get("Retry-After")
+          );
         }
         const rangeRequested = headers["Range"] != null;
         if (rangeRequested && res.status !== 200 && res.status !== 206) {
