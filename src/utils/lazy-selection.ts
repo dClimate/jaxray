@@ -85,7 +85,7 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
   const parentIndexMapping: { [dim: string]: number[] } = {}; // Maps to parent virtual space
   // Track which dimensions use discrete (non-contiguous) index selection.
   // After the loader fetches a contiguous range, these dimensions need post-fetch extraction.
-  const discreteSelectionOffsets: { [dim: string]: number[] } = {};
+  const discreteSelectionDimensions = new Set<DimensionName>();
 
   // Get coordinate attributes for time conversion
   const coordAttrs = (attrs as any)?._coordAttrs;
@@ -154,8 +154,7 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       newCoords[dim] = indices.map(idx => coords[dim][idx]);
       newOriginalIndexMapping[dim] = mapping;
       parentIndexMapping[dim] = parentMapping;
-      // Store offsets relative to the contiguous fetch range so we can extract discrete points
-      discreteSelectionOffsets[dim] = indices.map(idx => idx - minIdx);
+      discreteSelectionDimensions.add(dim);
     } else if (sel && typeof sel === 'object' && ('start' in sel || 'stop' in sel)) {
       const { start, stop } = sel as { start?: CoordinateValue; stop?: CoordinateValue };
       const startIndex = start !== undefined ?
@@ -209,6 +208,7 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
 
   const lazyLoader = async (requestedRanges: Record<string, LazyIndexRange>) => {
     const resolved: Record<string, LazyIndexRange> = {};
+    const discreteSelectionOffsets: { [dim: string]: number[] } = {};
 
     for (const dim of parentDims) {
       if (fixedOriginalIndices[dim] !== undefined) {
@@ -241,6 +241,9 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
           start: minOriginal,
           stop: maxOriginalExclusive
         };
+        if (discreteSelectionDimensions.has(dim)) {
+          discreteSelectionOffsets[dim] = mapping.map(index => index - minOriginal);
+        }
         continue;
       }
 
@@ -270,6 +273,12 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
         start: mapping[clampedStart],
         stop: mapping[clampedStopIdx - 1] + 1
       };
+      if (discreteSelectionDimensions.has(dim)) {
+        const resolvedStart = mapping[clampedStart];
+        discreteSelectionOffsets[dim] = mapping
+          .slice(clampedStart, clampedStopIdx)
+          .map(index => index - resolvedStart);
+      }
     }
 
     let result = await loader(resolved);
