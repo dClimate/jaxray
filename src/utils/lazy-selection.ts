@@ -125,9 +125,8 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       sel instanceof Date
     ) {
       const index = findCoordinateIndex(coords[dim], sel, options, dim, dimAttrs);
-      const originalIndex = mapIndexToOriginal(originalIndexMapping, dim, index);
-      indexRanges[dim] = originalIndex;
-      fixedOriginalIndices[dim] = originalIndex;
+      indexRanges[dim] = index;
+      fixedOriginalIndices[dim] = index;
     } else if (Array.isArray(sel)) {
       // xarray-compatible: array selection picks discrete points, not a contiguous range.
       const indices = sel.map(v =>
@@ -246,18 +245,13 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       }
 
       if (typeof requested === 'number') {
-        if (requested >= 0 && requested < mapping.length) {
-          const originalIndex = mapping[requested];
-          if (originalIndex === undefined) {
-            throw new Error(
-              `Lazy selection index ${requested} out of bounds for dimension '${dim}' of length ${mapping.length}`
-            );
-          }
-          resolved[dim] = originalIndex;
-        } else {
-          const clampedOriginal = Math.min(Math.max(requested, minOriginal), maxOriginal);
-          resolved[dim] = clampedOriginal;
+        const originalIndex = mapping[requested];
+        if (requested < 0 || requested >= mapping.length || originalIndex === undefined) {
+          throw new Error(
+            `Lazy selection index ${requested} out of bounds for dimension '${dim}' of length ${mapping.length}`
+          );
         }
+        resolved[dim] = originalIndex;
         continue;
       }
 
@@ -288,6 +282,7 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       const dim = resultDims[d];
       const offsets = discreteSelectionOffsets[dim];
       if (!offsets) continue;
+      if (typeof requestedRanges[dim] === 'number') continue;
 
       // Check if offsets are already contiguous (no extraction needed)
       const isContiguous = offsets.every((v, i) => i === 0 || v === offsets[i - 1] + 1);

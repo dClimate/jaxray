@@ -163,7 +163,7 @@ describe('performLazySelection', () => {
       expect(result.dims).toEqual(['x']);
     });
 
-    test('should use originalIndexMapping when provided', () => {
+    test('should pass the parent-space scalar index to the parent loader', () => {
       const loader = createMockLoader();
       const params: LazySelectionParams = {
         selection: { x: 20 }, // Select coordinate value 20 (at index 1)
@@ -183,13 +183,13 @@ describe('performLazySelection', () => {
 
       const result = performLazySelection(params);
 
-      // When we select coordinate value 20 (index 1), it should map to original index 10
+      // The parent loader owns the mapping from parent index 1 to original index 10.
       const testLoader = result.lazyLoader;
       testLoader({ y: { start: 0, stop: 2 } });
 
       expect(loader).toHaveBeenCalledWith(
         expect.objectContaining({
-          x: 10 // Should use the originalIndexMapping
+          x: 1
         })
       );
     });
@@ -440,7 +440,7 @@ describe('performLazySelection', () => {
       });
     });
 
-    test('should clamp out-of-bounds scalar indices', async () => {
+    test('should reject out-of-bounds scalar indices', async () => {
       const loader = createMockLoader();
       const params: LazySelectionParams = {
         selection: { x: { start: 10, stop: 30 } }, // Select coords 10, 20, 30 (indices 1-3)
@@ -452,13 +452,10 @@ describe('performLazySelection', () => {
       };
 
       const result = performLazySelection(params);
-      // Result has 3 elements, requesting index 100 should clamp to last element (original index 3)
-      await result.lazyLoader({ x: 100 });
-
-      // Should clamp to max original index (3)
-      expect(loader).toHaveBeenCalledWith({
-        x: 3
-      });
+      await expect(result.lazyLoader({ x: 100 })).rejects.toThrow(
+        "Lazy selection index 100 out of bounds for dimension 'x' of length 3"
+      );
+      expect(loader).not.toHaveBeenCalled();
     });
 
     test('should handle single element selection', async () => {
