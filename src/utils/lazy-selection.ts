@@ -288,7 +288,11 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       const isContiguous = offsets.every((v, i) => i === 0 || v === offsets[i - 1] + 1);
       if (isContiguous && offsets.length === (Math.max(...offsets) - Math.min(...offsets) + 1)) continue;
 
-      result = selectMultipleAtDimension(result, d, offsets);
+      const droppedPrecedingDims = resultDims
+        .slice(0, d)
+        .filter(precedingDim => typeof requestedRanges[precedingDim] === 'number')
+        .length;
+      result = selectMultipleAtDimension(result, d - droppedPrecedingDims, offsets);
     }
 
     return result;
