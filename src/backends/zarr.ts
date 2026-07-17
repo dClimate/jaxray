@@ -2,7 +2,7 @@
 import * as zarr from "zarrita";
 import { Dataset } from "../Dataset.js";
 import { DataArray } from "../DataArray.js";
-import { reshape } from "../utils.js";
+import { reshapeFlat } from "../utils.js";
 import { DataValue, NDArray } from "../types.js";
 import { cfTimeToDate, isTimeCoordinate } from "../time/cf-time.js";
 
@@ -328,11 +328,10 @@ export class ZarrBackend {
           return scalarValue as unknown as DataValue;
         }
 
-        // Handle array result
-        const flatData = Array.from(result.data || result) as DataValue[];
-
-        // Reshape to nested array using utility function
-        return reshape(flatData, resultShape);
+        // Handle array result: reshape directly from the decoded (typed) array,
+        // avoiding a boxed Array.from copy of the whole selection.
+        const flatData = (result.data !== undefined ? result.data : result) as ArrayLike<DataValue>;
+        return reshapeFlat(flatData, resultShape);
       };
 
       dataVars[arr.name] = new DataArray(null, {
