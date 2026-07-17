@@ -7,6 +7,21 @@
 import { CoordinateValue, DimensionName, SelectionOptions } from '../types.js';
 import { isTimeCoordinate, parseCFTimeUnits } from '../time/cf-time.js';
 
+interface CoordinateNumericCacheEntry {
+  unitsKey: string | undefined;
+  numericCoords: number[] | null;
+  evenlySpaced: boolean;
+  first: number;
+  step: number;
+}
+
+/**
+ * Coordinate arrays are treated as immutable after their first lookup, matching
+ * how the library constructs them; in-place mutation after lookup is unsupported.
+ * Array identity and the units used for conversion determine cache reuse.
+ */
+const coordinateNumericCache = new WeakMap<CoordinateValue[], CoordinateNumericCacheEntry>();
+
 /**
  * Find the index of a coordinate value in a coordinate array
  * Supports exact match, nearest, forward fill, and backward fill methods
@@ -88,28 +103,50 @@ export function findCoordinateIndex(
     return findIndexFallback(coords, value, method, tolerance, dim);
   }
 
-  const numericCoords: number[] = [];
-  let canUseNumeric = true;
-  for (const coord of coords) {
-    const converted = convertValueToNumeric(coord);
-    if (converted === undefined) {
-      canUseNumeric = false;
-      break;
+  const unitsKey = timeLike && units ? units : undefined;
+  let cached = coordinateNumericCache.get(coords);
+  if (!cached || cached.unitsKey !== unitsKey) {
+    const numericCoords: number[] = [];
+    let canUseNumeric = true;
+    for (const coord of coords) {
+      const converted = convertValueToNumeric(coord);
+      if (converted === undefined) {
+        canUseNumeric = false;
+        break;
+      }
+      numericCoords.push(converted);
     }
-    numericCoords.push(converted);
+
+    let evenlySpaced = false;
+    let first = 0;
+    let step = 1;
+    if (canUseNumeric && numericCoords.length >= 2) {
+      first = numericCoords[0];
+      step = numericCoords[1] - numericCoords[0];
+
+      // Check if coordinates are evenly spaced (with small tolerance for floating point)
+      evenlySpaced = numericCoords.length <= 2 || numericCoords.every((coord, i) => {
+        if (i === 0) return true;
+        const expectedValue = first + i * step;
+        return Math.abs(coord - expectedValue) < Math.abs(step) * 1e-6;
+      });
+    }
+
+    cached = {
+      unitsKey,
+      numericCoords: canUseNumeric ? numericCoords : null,
+      evenlySpaced,
+      first,
+      step
+    };
+    coordinateNumericCache.set(coords, cached);
   }
 
-  if (canUseNumeric && numericCoords.length >= 2) {
-    const numCoords = numericCoords;
-    const min = numCoords[0];
-    const step = numCoords.length > 1 ? (numCoords[1] - numCoords[0]) : 1;
-
-    // Check if coordinates are evenly spaced (with small tolerance for floating point)
-    const isEvenlySpaced = numCoords.length <= 2 || numCoords.every((coord, i) => {
-      if (i === 0) return true;
-      const expectedValue = min + i * step;
-      return Math.abs(coord - expectedValue) < Math.abs(step) * 1e-6;
-    });
+  if (cached.numericCoords && cached.numericCoords.length >= 2) {
+    const numCoords = cached.numericCoords;
+    const min = cached.first;
+    const step = cached.step;
+    const isEvenlySpaced = cached.evenlySpaced;
 
     if (isEvenlySpaced && Math.abs(step) > 1e-10) {
       // Use arithmetic calculation (O(1) instead of O(n))
@@ -177,7 +214,7 @@ export function findCoordinateIndex(
     }
 
     // Not evenly spaced but we have numeric coords - use fallback with numeric arrays
-    return findIndexFallback(numericCoords, numericValue, method, tolerance, dim);
+    return findIndexFallback(numCoords, numericValue, method, tolerance, dim);
   }
 
   // Fallback to linear search for non-numeric coordinates
