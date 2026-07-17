@@ -66,7 +66,7 @@ export function computeWhere(
 
   const data = plan.execute(indices => {
     const condValue = resolveOperandValue(cond, plan.dims, indices);
-    const useX = Boolean(condValue);
+    const useX = typeof condValue === 'number' ? condValue !== 0 : Boolean(condValue);
     const xValue = resolveOperandValue(x, plan.dims, indices);
     const yValue = resolveOperandValue(y, plan.dims, indices);
     return useX ? xValue : yValue;
