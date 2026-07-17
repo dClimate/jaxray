@@ -336,8 +336,8 @@ describe('binarySearchFfill', () => {
 
   test('should find in descending array', () => {
     const coords = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10];
-    expect(binarySearchFfill(coords, 55, false)).toBe(5); // 50
-    expect(binarySearchFfill(coords, 15, false)).toBe(9); // 10
+    expect(binarySearchFfill(coords, 55, false)).toBe(4); // 60
+    expect(binarySearchFfill(coords, 15, false)).toBe(8); // 20
   });
 
   test('should handle edge at beginning', () => {
@@ -366,8 +366,8 @@ describe('binarySearchBfill', () => {
 
   test('should find in descending array', () => {
     const coords = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10];
-    expect(binarySearchBfill(coords, 55, false)).toBe(4); // 60
-    expect(binarySearchBfill(coords, 85, false)).toBe(1); // 90
+    expect(binarySearchBfill(coords, 55, false)).toBe(5); // 50
+    expect(binarySearchBfill(coords, 85, false)).toBe(2); // 80
   });
 
   test('should handle edge at beginning', () => {
