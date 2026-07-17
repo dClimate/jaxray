@@ -75,7 +75,7 @@ describe('performLazySelection', () => {
       expect(result.coords.y).toEqual([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
     });
 
-    test('should create identity mapping when no selection provided', () => {
+    test('should pass requested ranges through when no selection is provided', async () => {
       const loader = createMockLoader();
       const params: LazySelectionParams = {
         selection: {},
@@ -87,8 +87,9 @@ describe('performLazySelection', () => {
       };
 
       const result = performLazySelection(params);
+      await result.lazyLoader({ x: { start: 1, stop: 3 } });
 
-      expect(result.originalIndexMapping.x).toEqual([0, 1, 2]);
+      expect(loader).toHaveBeenCalledWith({ x: { start: 1, stop: 3 } });
     });
   });
 
@@ -481,7 +482,7 @@ describe('performLazySelection', () => {
   });
 
   describe('attributes and metadata', () => {
-    test('should deep clone attributes', () => {
+    test('should isolate top-level attribute mutations', () => {
       const loader = createMockLoader();
       const attrs: Attributes = {
         description: 'test data',
@@ -501,7 +502,9 @@ describe('performLazySelection', () => {
 
       expect(result.attrs).toEqual(attrs);
       expect(result.attrs).not.toBe(attrs);
-      expect((result.attrs as any).nested).not.toBe((attrs as any).nested);
+
+      result.attrs.description = 'selected data';
+      expect(attrs.description).toBe('test data');
     });
 
     test('should preserve name', () => {

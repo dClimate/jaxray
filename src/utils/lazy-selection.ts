@@ -12,9 +12,57 @@ import {
   Attributes,
   CoordinateValue
 } from '../types.js';
-import { deepClone } from '../utils.js';
 import { findCoordinateIndex } from './coordinate-indexing.js';
 import { selectMultipleAtDimension } from './data-operations.js';
+
+const DISCRETE_FETCH_GAP = 16;
+
+interface DiscreteFetchRun {
+  start: number;
+  stop: number;
+}
+
+function createDiscreteFetchRuns(indices: number[]): DiscreteFetchRun[] {
+  const sortedIndices = [...new Set(indices)].sort((a, b) => a - b);
+  const runs: DiscreteFetchRun[] = [];
+
+  for (const index of sortedIndices) {
+    const lastRun = runs[runs.length - 1];
+    if (lastRun && index - lastRun.stop <= DISCRETE_FETCH_GAP) {
+      lastRun.stop = index + 1;
+    } else {
+      runs.push({ start: index, stop: index + 1 });
+    }
+  }
+
+  return runs;
+}
+
+function stitchDiscreteFetchRuns(
+  results: any[],
+  runs: DiscreteFetchRun[],
+  indices: number[],
+  dimIndex: number
+): any {
+  const locationsByIndex = new Map<number, { runIndex: number; offset: number }>();
+  let runIndex = 0;
+  for (const index of [...new Set(indices)].sort((a, b) => a - b)) {
+    while (index >= runs[runIndex].stop) runIndex++;
+    locationsByIndex.set(index, { runIndex, offset: index - runs[runIndex].start });
+  }
+  const locations = indices.map(index => locationsByIndex.get(index)!);
+
+  const stitchAtDimension = (runResults: any[], currentDimIndex: number): any => {
+    if (currentDimIndex === 0) {
+      return locations.map(({ runIndex, offset }) => runResults[runIndex][offset]);
+    }
+    return runResults[0].map((_: any, index: number) =>
+      stitchAtDimension(runResults.map(result => result[index]), currentDimIndex - 1)
+    );
+  };
+
+  return stitchAtDimension(results, dimIndex);
+}
 
 /**
  * Map a current index to the original index in the source dataset.
@@ -98,6 +146,17 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
     const dimAttrs = coordAttrs?.[dim] || attrs;
     if (sel === undefined) {
       const length = shape[i];
+
+      // An untouched dimension without a prior mapping is already in parent
+      // space. Preserve that identity implicitly instead of allocating O(n)
+      // mapping arrays.
+      if (!originalIndexMapping || !originalIndexMapping[dim]) {
+        indexRanges[dim] = { start: 0, stop: length };
+        newDims.push(dim);
+        newCoords[dim] = coords[dim];
+        continue;
+      }
+
       // Parent mapping: identity (all indices 0 to length-1)
       const parentMapping = Array.from({ length }, (_, j) => j);
       // Original mapping: map through to original space
@@ -145,7 +204,7 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
         mapIndexToOriginal(originalIndexMapping, dim, parentIdx)
       );
 
-      // The loader still needs a contiguous range; we'll extract discrete points after fetch
+      // Keep the enclosing range as a fallback; the loader wrapper splits sparse requests below.
       const minIdx = Math.min(...indices);
       const maxIdx = Math.max(...indices);
       indexRanges[dim] = {
@@ -213,6 +272,11 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
   const lazyLoader = async (requestedRanges: Record<string, LazyIndexRange>) => {
     const resolved: Record<string, LazyIndexRange> = {};
     const discreteSelectionOffsets: { [dim: string]: number[] } = {};
+    const discreteFetchCandidates: {
+      dim: DimensionName;
+      indices: number[];
+      runs: DiscreteFetchRun[];
+    }[] = [];
 
     for (const dim of parentDims) {
       if (fixedOriginalIndices[dim] !== undefined) {
@@ -225,7 +289,31 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       const parentRange = indexRanges[dim];
       const requested = requestedRanges[dim];
 
-      if (!mapping || mapping.length === 0) {
+      if (!mapping) {
+        // Identity dimensions have no mapping to translate. Pass requests
+        // through in parent space, clamped to the dimension extent.
+        if (typeof parentRange === 'number') {
+          resolved[dim] = parentRange;
+        } else if (requested === undefined) {
+          resolved[dim] = parentRange
+            ? { start: parentRange.start, stop: parentRange.stop }
+            : { start: 0, stop: 0 };
+        } else if (typeof requested === 'number') {
+          resolved[dim] = parentRange
+            ? Math.min(Math.max(requested, parentRange.start), parentRange.stop - 1)
+            : requested;
+        } else {
+          const start = parentRange?.start ?? 0;
+          const stop = parentRange?.stop ?? requested.stop;
+          resolved[dim] = {
+            start: Math.max(start, Math.min(requested.start ?? start, stop)),
+            stop: Math.max(start, Math.min(requested.stop ?? stop, stop))
+          };
+        }
+        continue;
+      }
+
+      if (mapping.length === 0) {
         if (typeof parentRange === 'number') {
           resolved[dim] = parentRange;
         } else if (parentRange) {
@@ -246,6 +334,11 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
           const rangeStop = Math.max(...mapping) + 1;
           resolved[dim] = { start: rangeStart, stop: rangeStop };
           discreteSelectionOffsets[dim] = mapping.map(index => index - rangeStart);
+          discreteFetchCandidates.push({
+            dim,
+            indices: mapping,
+            runs: createDiscreteFetchRuns(mapping)
+          });
           continue;
         }
         resolved[dim] = {
@@ -285,6 +378,11 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
           stop: Math.max(...selectedMapping) + 1
         };
         discreteSelectionOffsets[dim] = selectedMapping.map(index => index - resolvedStart);
+        discreteFetchCandidates.push({
+          dim,
+          indices: selectedMapping,
+          runs: createDiscreteFetchRuns(selectedMapping)
+        });
       } else {
         resolved[dim] = {
           start: mapping[clampedStart],
@@ -293,30 +391,71 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       }
     }
 
-    let result = await loader(resolved);
+    const splitCandidate = discreteFetchCandidates
+      .filter(candidate => candidate.runs.length > 1)
+      .reduce<typeof discreteFetchCandidates[number] | undefined>((best, candidate) => {
+        const range = resolved[candidate.dim];
+        if (typeof range === 'number') return best;
+        const savedElements = (range.stop - range.start) - candidate.runs.reduce(
+          (total, run) => total + run.stop - run.start,
+          0
+        );
+        if (!best) return candidate;
+        const bestRange = resolved[best.dim];
+        if (typeof bestRange === 'number') return candidate;
+        const bestSavedElements = (bestRange.stop - bestRange.start) - best.runs.reduce(
+          (total, run) => total + run.stop - run.start,
+          0
+        );
+        return savedElements > bestSavedElements ? candidate : best;
+      }, undefined);
 
     // For dimensions with discrete (non-contiguous) array selections, the loader
     // returned a contiguous range. Extract only the exact requested indices.
     // Process in reverse dim order so earlier extractions don't shift later dim positions.
     const resultDims = newDims;
-    for (let d = resultDims.length - 1; d >= 0; d--) {
-      const dim = resultDims[d];
-      const offsets = discreteSelectionOffsets[dim];
-      if (!offsets) continue;
-      if (typeof requestedRanges[dim] === 'number') continue;
+    const extractDiscreteSelections = (loaded: any): any => {
+      let result = loaded;
+      for (let d = resultDims.length - 1; d >= 0; d--) {
+        const dim = resultDims[d];
+        const offsets = discreteSelectionOffsets[dim];
+        if (!offsets) continue;
+        if (typeof requestedRanges[dim] === 'number') continue;
 
-      // Check if offsets are already contiguous (no extraction needed)
-      const isContiguous = offsets.every((v, i) => i === 0 || v === offsets[i - 1] + 1);
-      if (isContiguous && offsets.length === (Math.max(...offsets) - Math.min(...offsets) + 1)) continue;
+        // Check if offsets are already contiguous (no extraction needed)
+        const isContiguous = offsets.every((v, i) => i === 0 || v === offsets[i - 1] + 1);
+        if (isContiguous && offsets.length === (Math.max(...offsets) - Math.min(...offsets) + 1)) continue;
 
-      const droppedPrecedingDims = resultDims
-        .slice(0, d)
-        .filter(precedingDim => typeof requestedRanges[precedingDim] === 'number')
-        .length;
-      result = selectMultipleAtDimension(result, d - droppedPrecedingDims, offsets);
+        const droppedPrecedingDims = resultDims
+          .slice(0, d)
+          .filter(precedingDim => typeof requestedRanges[precedingDim] === 'number')
+          .length;
+        result = selectMultipleAtDimension(result, d - droppedPrecedingDims, offsets);
+      }
+      return result;
+    };
+
+    if (!splitCandidate) {
+      return extractDiscreteSelections(await loader(resolved));
     }
 
-    return result;
+    delete discreteSelectionOffsets[splitCandidate.dim];
+    const runResults = await Promise.all(splitCandidate.runs.map(run => loader({
+      ...resolved,
+      [splitCandidate.dim]: run
+    })));
+    const dimPosition = resultDims.indexOf(splitCandidate.dim);
+    const droppedPrecedingDims = resultDims
+      .slice(0, dimPosition)
+      .filter(precedingDim => typeof requestedRanges[precedingDim] === 'number')
+      .length;
+
+    return stitchDiscreteFetchRuns(
+      runResults.map(extractDiscreteSelections),
+      splitCandidate.runs,
+      splitCandidate.indices,
+      dimPosition - droppedPrecedingDims
+    );
   };
 
   return {
@@ -324,7 +463,9 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
     lazyLoader,
     dims: newDims,
     coords: newCoords,
-    attrs: deepClone(attrs),
+    // Top-level attrs remain isolated between results. Nested metadata is
+    // intentionally shared because Zarr attrs embed full coordinate arrays.
+    attrs: { ...attrs },
     name,
     originalIndexMapping: newOriginalIndexMapping
   };
