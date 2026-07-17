@@ -138,7 +138,10 @@ export function findCoordinateIndex(
             }
           } else if (roundedIndex >= 0 && roundedIndex < numCoords.length) {
             const actualValue = numCoords[roundedIndex];
-            const roundingTolerance = Math.max(Math.abs(numericValue), Math.abs(actualValue), 1) * 1e-9;
+            const roundingTolerance = Math.min(
+              (Math.max(Math.abs(numericValue), Math.abs(actualValue)) + Math.abs(step)) * Number.EPSILON * 8,
+              Math.abs(step) * 1e-9
+            );
             if (Math.abs(numericValue - actualValue) > roundingTolerance) {
               throw new Error(`Coordinate value '${value}' not found in dimension '${dim}' (no exact match)`);
             }
