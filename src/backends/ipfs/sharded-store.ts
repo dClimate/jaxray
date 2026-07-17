@@ -441,7 +441,7 @@ export class ShardedStore implements AsyncReadable {
             return this.parseChunkCoords(arrayPath, coordPart);
         }
 
-        if (this.manifestVersion === "sharded_zarr_v2" && key.startsWith("c/")) {
+        if (key.startsWith("c/")) {
             return this.parseChunkCoords("", key.substring(2));
         }
 
