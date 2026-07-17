@@ -25,15 +25,18 @@ const coordinateNumericCache = new WeakMap<CoordinateValue[], CoordinateNumericC
 function parseDateStringAsUTC(value: string): Date {
   let normalized = value.trim();
 
-  if (!normalized.includes('T') && normalized.includes(' ')) {
+  if (!/[tT]/.test(normalized) && normalized.includes(' ')) {
     const parts = normalized.split(/\s+/);
     if (parts.length >= 2) {
-      normalized = `${parts[0]}T${parts[1]}`;
+      const detachedTimezone = parts[2] && /^([zZ]|[+-]\d{2}:?\d{2})$/.test(parts[2])
+        ? parts[2]
+        : '';
+      normalized = `${parts[0]}T${parts[1]}${detachedTimezone}`;
     }
   }
 
   const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(normalized);
-  if (!hasTimezone && normalized.includes('T')) {
+  if (!hasTimezone && /[tT]/.test(normalized)) {
     normalized = `${normalized}Z`;
   }
 
@@ -267,10 +270,19 @@ export function findIndexFallback(
       typeof c === 'string' ? c === isoValue :
       false
     );
-    if (index === -1) {
-      throw new Error(`Coordinate value '${value}' not found in dimension`);
+    if (index !== -1) {
+      return index;
     }
-    return index;
+
+    const { numValue, numCoords } = toNumericForComparison(value, coords);
+    if (numValue !== undefined && numCoords) {
+      const dateIndex = numCoords.indexOf(numValue);
+      if (dateIndex !== -1) {
+        return dateIndex;
+      }
+    }
+
+    throw new Error(`Coordinate value '${value}' not found in dimension`);
   }
 
   const index = coords.indexOf(value);

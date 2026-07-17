@@ -24,6 +24,10 @@ function utcHourValues(day: number): number[] {
 }
 
 describe('zone-less datetime strings use UTC in coordinate lookups', () => {
+  test('test runtime honors the non-UTC timezone pin', () => {
+    expect(new Date('2021-01-01T12:00:00').getTimezoneOffset()).not.toBe(0);
+  });
+
   test('sel exact interprets a zone-less label as UTC against Date.UTC coordinates', async () => {
     const da = new DataArray(utcHourValues(15), {
       dims: ['time'],
@@ -157,5 +161,107 @@ describe('zone-less datetime strings use UTC in coordinate lookups', () => {
     const result = await da.sel({ time: '2021-01-15T12:00:00Z' });
 
     expect(result.data).toBe(new Date(Date.UTC(2021, 0, 15, 12)).getUTCHours());
+  });
+
+  test('sel exact and nearest interpret a lowercase-t label as UTC', async () => {
+    const da = new DataArray(utcHourValues(1), {
+      dims: ['time'],
+      coords: { time: utcDateCoords(1) }
+    });
+
+    const exact = await da.sel({ time: '2021-01-01t12:00:00' });
+    const nearest = await da.sel(
+      { time: '2021-01-01t12:20:00' },
+      { method: 'nearest' }
+    );
+
+    expect(exact.data).toBe(12);
+    expect(nearest.data).toBe(12);
+  });
+
+  test('sel exact matches a Date label against zone-less string coordinates', async () => {
+    const da = new DataArray(utcHourValues(1), {
+      dims: ['time'],
+      coords: { time: zonelessStringCoords(1) }
+    });
+
+    const result = await da.sel({ time: new Date(Date.UTC(2021, 0, 1, 8)) });
+
+    expect(result.data).toBe(8);
+  });
+
+  test('sel slice matches Date endpoints against zone-less string coordinates', async () => {
+    const coords = zonelessStringCoords(1);
+    const da = new DataArray(utcHourValues(1), {
+      dims: ['time'],
+      coords: { time: coords }
+    });
+
+    const result = await da.sel({
+      time: {
+        start: new Date(Date.UTC(2021, 0, 1, 8)),
+        stop: new Date(Date.UTC(2021, 0, 1, 10))
+      }
+    });
+
+    expect(result.data).toEqual([8, 9, 10]);
+    expect(result.coords.time).toEqual(coords.slice(8, 11));
+  });
+
+  test('sel exact preserves a detached timezone offset', async () => {
+    const da = new DataArray(utcHourValues(1), {
+      dims: ['time'],
+      coords: { time: utcDateCoords(1) }
+    });
+
+    const result = await da.sel({ time: '2021-01-01 17:00:00 +05:00' });
+
+    expect(result.data).toBe(12);
+  });
+
+  test('sel exact interprets a space-separated zone-less label as UTC', async () => {
+    const da = new DataArray(utcHourValues(1), {
+      dims: ['time'],
+      coords: { time: utcDateCoords(1) }
+    });
+
+    const result = await da.sel({ time: '2021-01-01 12:00:00' });
+
+    expect(result.data).toBe(12);
+  });
+
+  test('sel exact preserves date-only UTC behavior', async () => {
+    const da = new DataArray(utcHourValues(1), {
+      dims: ['time'],
+      coords: { time: utcDateCoords(1) }
+    });
+
+    const result = await da.sel({ time: '2021-01-01' });
+
+    expect(result.data).toBe(0);
+  });
+
+  test('sel exact rejects an invalid datetime string as not found', async () => {
+    const da = new DataArray(utcHourValues(1), {
+      dims: ['time'],
+      coords: { time: utcDateCoords(1) }
+    });
+
+    await expect(da.sel({ time: 'not-a-datetime' })).rejects.toThrow(
+      "Coordinate value 'not-a-datetime' not found in dimension"
+    );
+  });
+
+  test('sel exact does not coerce categorical datetime lookalikes', async () => {
+    const da = new DataArray([1, 2, 3], {
+      dims: ['time'],
+      coords: {
+        time: ['2021-01-01-A', '2021-01-01-B', '2021-01-01-C']
+      }
+    });
+
+    await expect(
+      da.sel({ time: new Date(Date.UTC(2021, 0, 1)) })
+    ).rejects.toThrow('not found in dimension');
   });
 });
