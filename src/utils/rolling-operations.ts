@@ -21,6 +21,23 @@ export function applyRolling(
     }
 
     if (axis === dimIndex) {
+      if (Array.isArray(input[0])) {
+        const buildRolledLane = (slices: any[]): ((index: number) => any) => {
+          if (!Array.isArray(slices[0])) {
+            const rolled = rolling1D(slices as DataValue[], window, options, reducer);
+            return index => rolled[index];
+          }
+
+          const innerLanes = slices[0].map((_: any, innerIndex: number) =>
+            buildRolledLane(slices.map(slice => slice[innerIndex]))
+          );
+          return index => innerLanes.map((lane: (index: number) => any) => lane(index));
+        };
+
+        const rolledLane = buildRolledLane(input);
+        return input.map((_: any, index: number) => rolledLane(index));
+      }
+
       return rolling1D(input as DataValue[], window, options, reducer);
     }
 
