@@ -30,6 +30,7 @@ class XChaCha20Poly1305Codec {
 
   private readonly context: CodecContext;
   private cachedKey?: Promise<{ key: Uint8Array }>;
+  private cachedHeader?: Promise<Uint8Array>;
 
   constructor(context: CodecContext) {
     this.context = context;
@@ -37,8 +38,11 @@ class XChaCha20Poly1305Codec {
 
   async encode(data: Uint8Array): Promise<Uint8Array> {
     const { key } = await this.getKey();
+    const header = await this.getHeader();
     const nonce = await this.generateNonce();
-    const cipher = xchacha20poly1305(key, nonce);
+    const cipher = header.length > 0
+      ? xchacha20poly1305(key, nonce, header)
+      : xchacha20poly1305(key, nonce);
     const ciphertext = cipher.encrypt(data);
   
     const output = new Uint8Array(nonce.length + ciphertext.length);
@@ -53,9 +57,12 @@ class XChaCha20Poly1305Codec {
     }
 
     const { key } = await this.getKey();
+    const header = await this.getHeader();
     const nonce = data.subarray(0, NONCE_LENGTH);
     const ciphertext = data.subarray(NONCE_LENGTH);
-    const cipher = xchacha20poly1305(key, nonce);
+    const cipher = header.length > 0
+      ? xchacha20poly1305(key, nonce, header)
+      : xchacha20poly1305(key, nonce);
     const plaintext = cipher.decrypt(ciphertext);
 
     if (out) {
@@ -74,6 +81,13 @@ class XChaCha20Poly1305Codec {
       this.cachedKey = this.context.resolveKey(this.context.config).then(key => ({ key }));
     }
     return this.cachedKey;
+  }
+
+  private async getHeader(): Promise<Uint8Array> {
+    if (!this.cachedHeader) {
+      this.cachedHeader = this.context.resolveHeader(this.context.config);
+    }
+    return this.cachedHeader;
   }
 
   private async generateNonce(): Promise<Uint8Array> {
