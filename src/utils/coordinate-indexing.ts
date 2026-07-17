@@ -97,10 +97,7 @@ export function findCoordinateIndex(
   let numericValue: number | undefined = convertValueToNumeric(value);
 
   if (numericValue === undefined) {
-    if (typeof value === 'string') {
-      return findIndexFallback(coords, value, method, tolerance, dim);
-    }
-    return findIndexFallback(coords, value, method, tolerance, dim);
+    return findIndexFallback(coords, value, method, tolerance, dim, timeLike);
   }
 
   const unitsKey = timeLike && units ? units : undefined;
@@ -214,11 +211,11 @@ export function findCoordinateIndex(
     }
 
     // Not evenly spaced but we have numeric coords - use fallback with numeric arrays
-    return findIndexFallback(numCoords, numericValue, method, tolerance, dim);
+    return findIndexFallback(numCoords, numericValue, method, tolerance, dim, timeLike);
   }
 
   // Fallback to linear search for non-numeric coordinates
-  return findIndexFallback(coords, value, method, tolerance, dim);
+  return findIndexFallback(coords, value, method, tolerance, dim, timeLike);
 }
 
 /**
@@ -229,7 +226,8 @@ export function findIndexFallback(
   value: CoordinateValue,
   method?: string,
   tolerance?: number,
-  dim?: string
+  dim?: string,
+  timeLike?: boolean
 ): number {
   // Apply selection method
   if (method === 'nearest') {
@@ -260,7 +258,13 @@ export function findIndexFallback(
     return index;
   }
 
-  if (typeof value === 'string') {
+  // Only coerce string values to timestamps for genuine time coordinates:
+  // either explicitly time-typed (CF attrs) or Date-backed coordinates.
+  // Applying it to arbitrary string (categorical) coordinates causes false
+  // matches: two lexically-distinct labels that parse to the same instant
+  // (e.g. "2020-01-01T00:00:00Z" vs "2019-12-31T19:00:00-05:00") would match.
+  const coordsAreDateBacked = coords.length > 0 && coords[0] instanceof Date;
+  if (typeof value === 'string' && (timeLike || coordsAreDateBacked)) {
     const { numValue, numCoords } = toNumericForComparison(value, coords);
     if (numValue !== undefined && numCoords) {
       const dateIndex = numCoords.indexOf(numValue);

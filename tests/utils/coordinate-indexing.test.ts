@@ -133,6 +133,22 @@ describe('findIndexFallback', () => {
     expect(index).toBe(2);
   });
 
+  test('does NOT coerce string date-like categorical labels to timestamps', () => {
+    // Two lexically-distinct labels for the same instant must not match when
+    // the coordinate is a plain string (categorical) index, not a time coord.
+    const coords = ['2019-12-31T19:00:00-05:00', '2021-06-01T00:00:00Z'];
+    expect(() => findIndexFallback(coords, '2020-01-01T00:00:00Z'))
+      .toThrow(/not found/);
+    // Exact label still matches.
+    expect(findIndexFallback(coords, '2021-06-01T00:00:00Z')).toBe(1);
+  });
+
+  test('coerces string dates when the coordinate is explicitly time-typed', () => {
+    const coords = ['2019-12-31T19:00:00-05:00', '2021-06-01T00:00:00Z'];
+    const index = findIndexFallback(coords, '2020-01-01T00:00:00Z', undefined, undefined, 'time', true);
+    expect(index).toBe(0);
+  });
+
   test('should throw on no exact match', () => {
     const coords = [10, 20, 30, 40];
     expect(() => findIndexFallback(coords, 25))

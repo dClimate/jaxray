@@ -17,9 +17,47 @@ import { selectMultipleAtDimension } from './data-operations.js';
 
 const DISCRETE_FETCH_GAP = 16;
 
+// Upper bound on concurrent loader calls when a sparse selection is split into
+// many runs. Without this, a selection with thousands of widely-spaced indices
+// would fire thousands of Zarr loader calls at once, causing memory/socket
+// pressure. Runs beyond the limit queue and start as slots free up.
+const MAX_CONCURRENT_FETCH_RUNS = 8;
+
 interface DiscreteFetchRun {
   start: number;
   stop: number;
+}
+
+/**
+ * Map over items with a bounded number of concurrent in-flight promises.
+ * Preserves input order in the returned results array.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  task: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length <= limit) {
+    return Promise.all(items.map(task));
+  }
+
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  const worker = async (): Promise<void> => {
+    while (nextIndex < items.length) {
+      const current = nextIndex;
+      nextIndex += 1;
+      results[current] = await task(items[current], current);
+    }
+  };
+
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    () => worker()
+  );
+  await Promise.all(workers);
+  return results;
 }
 
 function createDiscreteFetchRuns(indices: number[]): DiscreteFetchRun[] {
@@ -188,6 +226,17 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       const index = positional
         ? sel as number
         : findCoordinateIndex(coords[dim], sel, options, dim, dimAttrs);
+      // `index` is a parent-virtual-space index (into this array's own coords).
+      // The loader we wrap already operates in parent-virtual space and performs
+      // any further translation to the underlying source itself, so we pass the
+      // index through unchanged rather than mapping it through
+      // `originalIndexMapping`. That mapping is user-facing metadata describing
+      // this array's relationship to the original source; it is NOT a loader
+      // translation table (the array branch below likewise loads in parent
+      // space). The one shape this does not support is a directly-constructed
+      // lazy array whose raw loader expects original-source indices while also
+      // carrying an `originalIndexMapping` — the normal sel/isel path never
+      // produces that pairing.
       indexRanges[dim] = index;
       fixedOriginalIndices[dim] = index;
     } else if (Array.isArray(sel)) {
@@ -440,10 +489,14 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
     }
 
     delete discreteSelectionOffsets[splitCandidate.dim];
-    const runResults = await Promise.all(splitCandidate.runs.map(run => loader({
-      ...resolved,
-      [splitCandidate.dim]: run
-    })));
+    const runResults = await mapWithConcurrency(
+      splitCandidate.runs,
+      MAX_CONCURRENT_FETCH_RUNS,
+      run => loader({
+        ...resolved,
+        [splitCandidate.dim]: run
+      })
+    );
     const dimPosition = resultDims.indexOf(splitCandidate.dim);
     const droppedPrecedingDims = resultDims
       .slice(0, dimPosition)
