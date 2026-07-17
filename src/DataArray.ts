@@ -32,7 +32,7 @@ import {
   type ArrayWhereOperand,
   type BinaryOpOptions
 } from './ops/where.js';
-import { isTimeCoordinate, parseCFTimeUnits, cfTimeToDate } from './time/cf-time.js';
+import { decodeCFTime, isTimeCoordinate, parseCFTimeUnits } from './time/cf-time.js';
 import { findCoordinateIndex } from './utils/coordinate-indexing.js';
 import {
   sumAll,
@@ -968,7 +968,7 @@ export class DataArray {
     };
 
     // Pre-check which dimensions are time coordinates
-    const timeCoordInfo: { [dim: string]: string } = {};
+    const timeCoordInfo: { [dim: string]: { units: string; calendar?: string } } = {};
     const coordAttrs = (this._attrs as any)?._coordAttrs;
 
     for (const dim of this._dims) {
@@ -976,7 +976,10 @@ export class DataArray {
       if (isTimeCoordinate(dimAttrs)) {
         const units = dimAttrs?.units as string | undefined;
         if (units) {
-          timeCoordInfo[dim] = units;
+          timeCoordInfo[dim] = {
+            units,
+            calendar: dimAttrs?.calendar as string | undefined
+          };
         }
       }
     }
@@ -1009,10 +1012,12 @@ export class DataArray {
 
         // Convert time coordinates to datetime strings
         if (timeCoordInfo[dim] && typeof coordValue === 'number') {
-          const units = timeCoordInfo[dim];
-          const convertedDate = cfTimeToDate(coordValue, units);
-          if (convertedDate) {
-            coordValue = convertedDate.toISOString();
+          const { units, calendar } = timeCoordInfo[dim];
+          const decoded = decodeCFTime(coordValue, units, calendar);
+          if (decoded instanceof Date) {
+            coordValue = decoded.toISOString();
+          } else if (typeof decoded === 'string') {
+            coordValue = decoded;
           }
         } else if (typeof coordValue === 'number') {
           // Round numeric coordinates to avoid floating-point precision errors

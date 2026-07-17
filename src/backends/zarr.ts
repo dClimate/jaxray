@@ -4,7 +4,7 @@ import { Dataset } from "../Dataset.js";
 import { DataArray } from "../DataArray.js";
 import { reshapeFlat } from "../utils.js";
 import { DataValue, NDArray } from "../types.js";
-import { cfTimeToDate, isTimeCoordinate } from "../time/cf-time.js";
+import { decodeCFTime, formatDate, isTimeCoordinate } from "../time/cf-time.js";
 
 function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | undefined): any[] {
   const normalized = values.map((value) => {
@@ -21,13 +21,18 @@ function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | u
     const units: string | undefined = attrs.units;
     const calendar: string | undefined = attrs.calendar;
     if (units) {
-      return normalized.map((value) => {
+      const decodedValues = normalized.map((value) => {
         if (typeof value === "number") {
-          const date = cfTimeToDate(value, units, calendar)?.toISOString();
-          return date ?? value;
+          return decodeCFTime(value, units, calendar) ?? value;
         }
-        return value.toISOString();
+        return value;
       });
+
+      if (decodedValues.some((value) => typeof value === "string")) {
+        return decodedValues.map((value) => value instanceof Date ? formatDate(value) : value);
+      }
+
+      return decodedValues.map((value) => value instanceof Date ? value.toISOString() : value);
     }
   }
 
