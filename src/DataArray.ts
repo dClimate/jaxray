@@ -37,7 +37,7 @@ import { findCoordinateIndex } from './utils/coordinate-indexing.js';
 import {
   sumAll,
   countAll,
-  divideArray,
+  meanAlongDimension,
   elementWiseOp,
   reshapeSqueezed,
   selectAtDimension,
@@ -548,9 +548,7 @@ export class DataArray {
       throw new Error(`Dimension '${dim}' not found`);
     }
 
-    const dimSize = this._shape[dimIndex];
-    const sumResult = this._reduce(dimIndex, (acc, val) => acc + (val as number));
-    const meanResult = divideArray(sumResult, dimSize);
+    const meanResult = meanAlongDimension(this._block.materialize(), dimIndex);
 
     const newDims = this._dims.filter((_, i) => i !== dimIndex);
 
