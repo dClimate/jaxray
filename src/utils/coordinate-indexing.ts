@@ -117,7 +117,7 @@ export function findCoordinateIndex(
       let index: number;
       switch (method) {
         case 'nearest':
-          index = Math.round(rawIndex);
+          index = Math.min(Math.max(Math.round(rawIndex), 0), coords.length - 1);
           break;
         case 'ffill':
         case 'pad':
