@@ -329,7 +329,7 @@ export class DataArray {
             newCoords[dim] = selectedIndices[dim].map(index => this._coords[dim][index]);
           } else if (typeof sel === 'object' && 'start' in sel) {
             const { start, stop } = sel;
-            const coordSlice = this._getCoordinateSlice(dim, start, stop);
+            const coordSlice = this._getCoordinateSlice(dim, start, stop, options);
             newCoords[dim] = coordSlice;
           }
         } else {
@@ -1371,24 +1371,21 @@ export class DataArray {
 
 
 
-  private _getCoordinateSlice(dim: DimensionName, start?: CoordinateValue, stop?: CoordinateValue): CoordinateValue[] {
+  private _getCoordinateSlice(
+    dim: DimensionName,
+    start?: CoordinateValue,
+    stop?: CoordinateValue,
+    options?: SelectionOptions
+  ): CoordinateValue[] {
     const coords = this._coords[dim];
-
-    const findIndex = (val: CoordinateValue): number => {
-      if (val instanceof Date) {
-        const iso = val.toISOString();
-        const idx = coords.findIndex(c =>
-          c instanceof Date ? c.getTime() === val.getTime() :
-          typeof c === 'string' ? c === iso :
-          false
-        );
-        return idx;
-      }
-      return coords.indexOf(val);
-    };
-
-    const startIndex = start !== undefined ? findIndex(start) : 0;
-    const stopIndex = stop !== undefined ? findIndex(stop) + 1 : coords.length;
+    const coordAttrs = (this._attrs as any)?._coordAttrs;
+    const dimAttrs = coordAttrs?.[dim] || this._attrs;
+    const startIndex = start !== undefined
+      ? findCoordinateIndex(coords, start, options, dim, dimAttrs)
+      : 0;
+    const stopIndex = stop !== undefined
+      ? findCoordinateIndex(coords, stop, options, dim, dimAttrs) + 1
+      : coords.length;
     return coords.slice(startIndex, stopIndex);
   }
 
