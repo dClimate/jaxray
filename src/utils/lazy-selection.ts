@@ -37,6 +37,7 @@ export function mapIndexToOriginal(
  */
 export interface LazySelectionParams {
   selection: Selection;
+  positional?: boolean;
   options?: SelectionOptions;
   dims: DimensionName[];
   shape: number[];
@@ -67,6 +68,7 @@ export interface LazySelectionResult {
 export function performLazySelection(params: LazySelectionParams): LazySelectionResult {
   const {
     selection,
+    positional = false,
     options,
     dims,
     shape,
@@ -124,14 +126,16 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       typeof sel === 'bigint' ||
       sel instanceof Date
     ) {
-      const index = findCoordinateIndex(coords[dim], sel, options, dim, dimAttrs);
+      const index = positional
+        ? sel as number
+        : findCoordinateIndex(coords[dim], sel, options, dim, dimAttrs);
       indexRanges[dim] = index;
       fixedOriginalIndices[dim] = index;
     } else if (Array.isArray(sel)) {
       // xarray-compatible: array selection picks discrete points, not a contiguous range.
-      const indices = sel.map(v =>
-        findCoordinateIndex(coords[dim], v, options, dim, dimAttrs)
-      );
+      const indices = positional
+        ? sel as number[]
+        : sel.map(v => findCoordinateIndex(coords[dim], v, options, dim, dimAttrs));
 
       // Parent mapping: only the exact requested indices (discrete, possibly non-contiguous)
       const parentMapping = indices;
@@ -237,13 +241,17 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       const maxOriginalExclusive = maxOriginal + 1;
 
       if (requested === undefined) {
+        if (discreteSelectionDimensions.has(dim)) {
+          const rangeStart = Math.min(...mapping);
+          const rangeStop = Math.max(...mapping) + 1;
+          resolved[dim] = { start: rangeStart, stop: rangeStop };
+          discreteSelectionOffsets[dim] = mapping.map(index => index - rangeStart);
+          continue;
+        }
         resolved[dim] = {
           start: minOriginal,
           stop: maxOriginalExclusive
         };
-        if (discreteSelectionDimensions.has(dim)) {
-          discreteSelectionOffsets[dim] = mapping.map(index => index - minOriginal);
-        }
         continue;
       }
 
@@ -269,15 +277,19 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
         Math.min(stopPos, mapping.length)
       );
 
-      resolved[dim] = {
-        start: mapping[clampedStart],
-        stop: mapping[clampedStopIdx - 1] + 1
-      };
       if (discreteSelectionDimensions.has(dim)) {
-        const resolvedStart = mapping[clampedStart];
-        discreteSelectionOffsets[dim] = mapping
-          .slice(clampedStart, clampedStopIdx)
-          .map(index => index - resolvedStart);
+        const selectedMapping = mapping.slice(clampedStart, clampedStopIdx);
+        const resolvedStart = Math.min(...selectedMapping);
+        resolved[dim] = {
+          start: resolvedStart,
+          stop: Math.max(...selectedMapping) + 1
+        };
+        discreteSelectionOffsets[dim] = selectedMapping.map(index => index - resolvedStart);
+      } else {
+        resolved[dim] = {
+          start: mapping[clampedStart],
+          stop: mapping[clampedStopIdx - 1] + 1
+        };
       }
     }
 
