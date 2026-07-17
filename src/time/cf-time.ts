@@ -118,6 +118,8 @@ function parseCalendarUnits(unitsStr: string): ParsedCalendarUnits | null {
 
   const fraction = dateMatch[7] ?? '';
   const timezone = dateMatch[8];
+  const roundedMilliseconds = Math.round(Number(`0.${fraction || '0'}`) * 1000);
+  const carriedSeconds = Math.floor(roundedMilliseconds / 1000);
   let timezoneOffsetMinutes = 0;
   if (timezone && timezone.toUpperCase() !== 'Z') {
     const sign = timezone[0] === '-' ? -1 : 1;
@@ -136,8 +138,8 @@ function parseCalendarUnits(unitsStr: string): ParsedCalendarUnits | null {
       day: Number(dateMatch[3]),
       hour: Number(dateMatch[4] ?? 0),
       minute: Number(dateMatch[5] ?? 0),
-      second: Number(dateMatch[6] ?? 0),
-      millisecond: Math.round(Number(`0.${fraction || '0'}`) * 1000)
+      second: Number(dateMatch[6] ?? 0) + carriedSeconds,
+      millisecond: roundedMilliseconds - carriedSeconds * 1000
     },
     timezoneOffsetMinutes
   };
@@ -179,6 +181,8 @@ function isValidDateTime(components: DateTimeComponents, calendar: CFCalendar): 
 }
 
 function gregorianDayNumber(year: number, month: number, day: number): number {
+  // Known divergence: standard/julian BCE dates use astronomical year 0;
+  // cftime has no year zero. Climate datasets do not practically reach BCE dates.
   const a = Math.floor((14 - month) / 12);
   const y = year + 4800 - a;
   const m = month + 12 * a - 3;

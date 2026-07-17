@@ -40,7 +40,23 @@ function parseDateStringAsUTC(value: string): Date {
     normalized = `${normalized}Z`;
   }
 
-  return new Date(normalized);
+  const parsed = new Date(normalized);
+  const hasExplicitOffset = /[+-]\d{2}:?\d{2}$/.test(normalized);
+  const dateParts = value.trim().match(/^([+-]?\d+)-(\d{1,2})-(\d{1,2})/);
+  if (
+    !hasExplicitOffset
+    && dateParts
+    && !Number.isNaN(parsed.getTime())
+    && (
+      parsed.getUTCFullYear() !== Number(dateParts[1])
+      || parsed.getUTCMonth() + 1 !== Number(dateParts[2])
+      || parsed.getUTCDate() !== Number(dateParts[3])
+    )
+  ) {
+    return new Date(NaN);
+  }
+
+  return parsed;
 }
 
 /**
@@ -101,14 +117,9 @@ export function findCoordinateIndex(
     if (typeof val === 'string' && timeLike && units) {
       const parsed = parseUnits();
       if (!parsed) return undefined;
-      let inputStr = val;
-      const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(inputStr);
-      if (!hasTimezone) {
-        inputStr = `${inputStr}Z`;
-      }
-      const asDate = new Date(inputStr);
+      const asDate = parseDateStringAsUTC(val);
       if (Number.isNaN(asDate.getTime())) {
-        throw new Error(`Invalid date string: '${val}'`);
+        return undefined;
       }
       return convertDateToNumeric(asDate);
     }

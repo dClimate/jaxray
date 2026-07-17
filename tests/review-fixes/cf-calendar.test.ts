@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { DataArray } from '../../src/DataArray';
 import * as cfTime from '../../src/time/cf-time';
 import { ZarrBackend } from '../../src/backends/zarr';
 import { MemoryZarrStore } from '../helpers/MemoryZarrStore';
@@ -96,6 +97,8 @@ describe('CF calendar decoding against cftime ground truth', () => {
       }
     }
 
+    // Deliberate superset: weeks remain supported as exact seven-day arithmetic,
+    // even though cftime refuses "weeks since ..." units.
     const refused = cases.filter(
       (item) => item.error && /^(months?|years?)\s+since\s+/i.test(item.units)
     );
@@ -193,6 +196,30 @@ describe('literal CF calendar contracts', () => {
     expect.soft(cfTime.cfTimeToDate(1, 'years since 2000-01-01', '360_day')).toBeNull();
   });
 
+  test('decodeCFTime carries fractional reference seconds that round to one millisecond-second boundary', () => {
+    const decoded = requireDecodeCFTime()(
+      0,
+      'seconds since 2000-01-01T00:00:00.9995'
+    );
+
+    expect(decoded).toBeInstanceOf(Date);
+    expect((decoded as Date).toISOString()).toBe('2000-01-01T00:00:01.000Z');
+  });
+
+  test('decodeCFTime pins the standard 1582 cutover and refuses gap references', () => {
+    const decodeCFTime = requireDecodeCFTime();
+
+    expect((decodeCFTime(3, 'days since 1582-10-01', 'standard') as Date).toISOString())
+      .toBe('1582-10-04T00:00:00.000Z');
+    expect((decodeCFTime(4, 'days since 1582-10-01', 'standard') as Date).toISOString())
+      .toBe('1582-10-15T00:00:00.000Z');
+    expect((decodeCFTime(5, 'days since 1582-10-01', 'standard') as Date).toISOString())
+      .toBe('1582-10-16T00:00:00.000Z');
+    expect(decodeCFTime(0, 'days since 1582-10-10', 'standard')).toBeNull();
+    expect(decodeCFTime(0, 'days since 1582-10-10', 'proleptic_gregorian'))
+      .toBeInstanceOf(Date);
+  });
+
   test('formatCoordinateValue preserves calendar-correct display strings', () => {
     expect.soft(cfTime.formatCoordinateValue(60, {
       units: 'days since 2000-01-01',
@@ -236,4 +263,114 @@ describe('Zarr CF calendar coordinate decoding', () => {
       '2000-03-02T00:00:00.000Z'
     ]);
   });
+
+  test('360_day exact selection preserves cftime labels and nearest fails loudly', async () => {
+    const store = createTimeSeriesStore(
+      '360_day',
+      'days since 2000-01-01',
+      [58, 59, 60],
+      [580, 590, 600]
+    );
+    const dataset = await ZarrBackend.open(store);
+    const variable = dataset.getVariable('temperature');
+
+    expect(dataset.coords.time).toEqual([
+      '2000-02-29T00:00:00',
+      '2000-02-30T00:00:00',
+      '2000-03-01T00:00:00'
+    ]);
+    expect((await variable.sel({ time: '2000-03-01T00:00:00' })).data).toBe(600);
+    expect((await variable.sel({ time: dataset.coords.time[1] })).data).toBe(590);
+    await expect(
+      variable.sel({ time: '2000-02-29T12:00:00' }, { method: 'nearest' })
+    ).rejects.toThrow('Nearest neighbor lookup requires numeric or Date coordinates');
+  });
+
+  test('all_leap exact selection does not overflow its 1850 leap day', async () => {
+    const store = createTimeSeriesStore(
+      'all_leap',
+      'days since 1850-01-01',
+      [58, 59, 60],
+      [580, 590, 600]
+    );
+    const dataset = await ZarrBackend.open(store);
+    const variable = dataset.getVariable('temperature');
+
+    expect(dataset.coords.time).toEqual([
+      '1850-02-28T00:00:00',
+      '1850-02-29T00:00:00',
+      '1850-03-01T00:00:00'
+    ]);
+    expect((await variable.sel({ time: '1850-03-01T00:00:00' })).data).toBe(600);
+  });
 });
+
+describe('DataArray CF calendar record conversion', () => {
+  test('toRecords uses noleap and 360_day calendars for numeric time coordinates', () => {
+    const noleap = new DataArray([1, 2], {
+      dims: ['time'],
+      coords: { time: [59, 60] },
+      attrs: {
+        _coordAttrs: {
+          time: {
+            standard_name: 'time',
+            units: 'days since 2000-01-01',
+            calendar: 'noleap'
+          }
+        }
+      }
+    });
+    const day360 = new DataArray([1, 2], {
+      dims: ['time'],
+      coords: { time: [59, 60] },
+      attrs: {
+        _coordAttrs: {
+          time: {
+            standard_name: 'time',
+            units: 'days since 2000-01-01',
+            calendar: '360_day'
+          }
+        }
+      }
+    });
+
+    expect(noleap.toRecords().map((record) => record.time)).toEqual([
+      '2000-03-01T00:00:00.000Z',
+      '2000-03-02T00:00:00.000Z'
+    ]);
+    expect(day360.toRecords().map((record) => record.time)).toEqual([
+      '2000-02-30T00:00:00',
+      '2000-03-01T00:00:00.000Z'
+    ]);
+  });
+});
+
+function createTimeSeriesStore(
+  calendar: string,
+  units: string,
+  timeValues: number[],
+  dataValues: number[]
+): MemoryZarrStore {
+  const store = new MemoryZarrStore({
+    'zarr.json': { node_type: 'group', attributes: {} },
+    'time/zarr.json': {
+      node_type: 'array',
+      shape: [timeValues.length],
+      data_type: 'float64',
+      dimension_names: ['time'],
+      attributes: { standard_name: 'time', units, calendar }
+    },
+    'temperature/zarr.json': {
+      node_type: 'array',
+      shape: [dataValues.length],
+      data_type: 'float64',
+      dimension_names: ['time'],
+      attributes: {}
+    }
+  });
+  const time = new Float64Array(timeValues);
+  const data = new Float64Array(dataValues);
+  store.set('time/c/0', new Uint8Array(time.buffer.slice(0)));
+  store.set('temperature/c/0', new Uint8Array(data.buffer.slice(0)));
+  return store;
+}
