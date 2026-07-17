@@ -404,7 +404,7 @@ export class HamtStore implements AsyncReadable {
             const metadataKeys = new Set<string>();
             metadataKeys.add("zarr.json");
             // This may need to change in the future
-            const consolidated = rootMeta?.consolidated_metadata.metadata;
+            const consolidated = rootMeta?.consolidated_metadata?.metadata;
             if (consolidated && typeof consolidated === "object") {
                 for (const [nodeName] of Object.entries(consolidated)) {
                     const normalizedName = this.normalizeKey(nodeName);
