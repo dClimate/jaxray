@@ -71,3 +71,42 @@ describe('where() uses numpy truthiness for non-boolean conditions', () => {
     expect(values.where(condition).data).toEqual([10, null, null, null]);
   });
 });
+
+describe('review-driven coverage: scalar, string, and -0 conditions', () => {
+  test('scalar NaN condition is truthy, scalar 0 is falsy', () => {
+    const values = new DataArray([10, 20], {
+      dims: ['x'],
+      coords: { x: [0, 1] }
+    });
+
+    expect(values.where(NaN, -1).data).toEqual([10, 20]);
+    expect(values.where(0, -1).data).toEqual([-1, -1]);
+  });
+
+  test('string conditions keep JS/numpy truthiness (empty falsy, non-empty truthy)', () => {
+    const values = new DataArray([10, 20], {
+      dims: ['x'],
+      coords: { x: [0, 1] }
+    });
+    const condition = new DataArray(['', '0'], {
+      dims: ['x'],
+      coords: { x: [0, 1] }
+    });
+
+    expect(values.where(condition, -1).data).toEqual([-1, 20]);
+  });
+
+  test('-0 condition is falsy like numpy bool(-0.0)', () => {
+    const values = new DataArray([10, 20], {
+      dims: ['x'],
+      coords: { x: [0, 1] }
+    });
+    const condition = new DataArray([-0, 1], {
+      dims: ['x'],
+      coords: { x: [0, 1] }
+    });
+
+    expect(values.where(condition, -1).data).toEqual([-1, 20]);
+    expect(values.where(-0, -1).data).toEqual([-1, -1]);
+  });
+});
