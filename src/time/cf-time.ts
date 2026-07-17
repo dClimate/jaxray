@@ -55,50 +55,334 @@ export function parseCFTimeUnits(unitsStr: string): { unit: string; referenceDat
   return { unit, referenceDate };
 }
 
+type CFCalendar =
+  | 'standard'
+  | 'proleptic_gregorian'
+  | 'julian'
+  | 'noleap'
+  | 'all_leap'
+  | '360_day';
+
+interface DateTimeComponents {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  millisecond: number;
+}
+
+interface ParsedCalendarUnits {
+  unit: string;
+  reference: DateTimeComponents;
+  timezoneOffsetMinutes: number;
+}
+
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+const GREGORIAN_MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const STANDARD_CUTOVER_DAY = 2299161; // 1582-10-15 Gregorian, after 1582-10-04 Julian
+
+function normalizeCalendar(calendar: string): CFCalendar | null {
+  switch (calendar.toLowerCase()) {
+    case 'standard':
+    case 'gregorian':
+      return 'standard';
+    case 'proleptic_gregorian':
+      return 'proleptic_gregorian';
+    case 'julian':
+      return 'julian';
+    case 'noleap':
+    case '365_day':
+      return 'noleap';
+    case 'all_leap':
+    case '366_day':
+      return 'all_leap';
+    case '360_day':
+      return '360_day';
+    default:
+      return null;
+  }
+}
+
+function parseCalendarUnits(unitsStr: string): ParsedCalendarUnits | null {
+  const unitsMatch = unitsStr.match(
+    /^(seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s+since\s+(.+)$/i
+  );
+  if (!unitsMatch) return null;
+
+  const dateMatch = unitsMatch[2].trim().match(
+    /^([+-]?\d+)-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2})(?:\.(\d+))?)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i
+  );
+  if (!dateMatch) return null;
+
+  const fraction = dateMatch[7] ?? '';
+  const timezone = dateMatch[8];
+  let timezoneOffsetMinutes = 0;
+  if (timezone && timezone.toUpperCase() !== 'Z') {
+    const sign = timezone[0] === '-' ? -1 : 1;
+    const digits = timezone.slice(1).replace(':', '');
+    const timezoneHours = Number(digits.slice(0, 2));
+    const timezoneMinutes = Number(digits.slice(2, 4));
+    if (timezoneHours > 23 || timezoneMinutes > 59) return null;
+    timezoneOffsetMinutes = sign * (timezoneHours * 60 + timezoneMinutes);
+  }
+
+  return {
+    unit: unitsMatch[1].toLowerCase().replace(/s$/, ''),
+    reference: {
+      year: Number(dateMatch[1]),
+      month: Number(dateMatch[2]),
+      day: Number(dateMatch[3]),
+      hour: Number(dateMatch[4] ?? 0),
+      minute: Number(dateMatch[5] ?? 0),
+      second: Number(dateMatch[6] ?? 0),
+      millisecond: Math.round(Number(`0.${fraction || '0'}`) * 1000)
+    },
+    timezoneOffsetMinutes
+  };
+}
+
+function isGregorianLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function isJulianLeapYear(year: number): boolean {
+  return year % 4 === 0;
+}
+
+function monthLengths(calendar: CFCalendar, year: number): number[] {
+  if (calendar === '360_day') return Array(12).fill(30);
+  if (calendar === 'all_leap') return [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (calendar === 'noleap') return GREGORIAN_MONTH_LENGTHS;
+
+  const leap = calendar === 'julian'
+    ? isJulianLeapYear(year)
+    : calendar === 'standard' && year < 1582
+      ? isJulianLeapYear(year)
+      : isGregorianLeapYear(year);
+  const lengths = [...GREGORIAN_MONTH_LENGTHS];
+  if (leap) lengths[1] = 29;
+  return lengths;
+}
+
+function isValidDateTime(components: DateTimeComponents, calendar: CFCalendar): boolean {
+  const { year, month, day, hour, minute, second, millisecond } = components;
+  if (!Number.isInteger(year) || month < 1 || month > 12 || !Number.isInteger(month)) return false;
+  if (day < 1 || day > monthLengths(calendar, year)[month - 1] || !Number.isInteger(day)) return false;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) return false;
+  if (millisecond < 0 || millisecond > 999) return false;
+  if (calendar === 'standard' && year === 1582 && month === 10 && day >= 5 && day <= 14) {
+    return false;
+  }
+  return true;
+}
+
+function gregorianDayNumber(year: number, month: number, day: number): number {
+  const a = Math.floor((14 - month) / 12);
+  const y = year + 4800 - a;
+  const m = month + 12 * a - 3;
+  return day + Math.floor((153 * m + 2) / 5) + 365 * y
+    + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400) - 32045;
+}
+
+function julianDayNumber(year: number, month: number, day: number): number {
+  const a = Math.floor((14 - month) / 12);
+  const y = year + 4800 - a;
+  const m = month + 12 * a - 3;
+  return day + Math.floor((153 * m + 2) / 5) + 365 * y + Math.floor(y / 4) - 32083;
+}
+
+function gregorianFromDayNumber(dayNumber: number): Pick<DateTimeComponents, 'year' | 'month' | 'day'> {
+  const a = dayNumber + 32044;
+  const b = Math.floor((4 * a + 3) / 146097);
+  const c = a - Math.floor(146097 * b / 4);
+  const d = Math.floor((4 * c + 3) / 1461);
+  const e = c - Math.floor(1461 * d / 4);
+  const m = Math.floor((5 * e + 2) / 153);
+  return {
+    day: e - Math.floor((153 * m + 2) / 5) + 1,
+    month: m + 3 - 12 * Math.floor(m / 10),
+    year: 100 * b + d - 4800 + Math.floor(m / 10)
+  };
+}
+
+function julianFromDayNumber(dayNumber: number): Pick<DateTimeComponents, 'year' | 'month' | 'day'> {
+  const c = dayNumber + 32082;
+  const d = Math.floor((4 * c + 3) / 1461);
+  const e = c - Math.floor(1461 * d / 4);
+  const m = Math.floor((5 * e + 2) / 153);
+  return {
+    day: e - Math.floor((153 * m + 2) / 5) + 1,
+    month: m + 3 - 12 * Math.floor(m / 10),
+    year: d - 4800 + Math.floor(m / 10)
+  };
+}
+
+function fixedCalendarDayNumber(components: DateTimeComponents, calendar: CFCalendar): number {
+  const yearLength = calendar === '360_day' ? 360 : calendar === 'all_leap' ? 366 : 365;
+  const lengths = monthLengths(calendar, components.year);
+  let dayNumber = (components.year - 1) * yearLength + components.day - 1;
+  for (let month = 1; month < components.month; month++) dayNumber += lengths[month - 1];
+  return dayNumber;
+}
+
+function fixedCalendarFromDayNumber(
+  dayNumber: number,
+  calendar: CFCalendar
+): Pick<DateTimeComponents, 'year' | 'month' | 'day'> {
+  const yearLength = calendar === '360_day' ? 360 : calendar === 'all_leap' ? 366 : 365;
+  const year = Math.floor(dayNumber / yearLength) + 1;
+  let dayOfYear = dayNumber - (year - 1) * yearLength;
+  const lengths = monthLengths(calendar, year);
+  let month = 1;
+  while (dayOfYear >= lengths[month - 1]) {
+    dayOfYear -= lengths[month - 1];
+    month++;
+  }
+  return { year, month, day: dayOfYear + 1 };
+}
+
+function toDayNumber(components: DateTimeComponents, calendar: CFCalendar): number {
+  if (calendar === 'proleptic_gregorian') {
+    return gregorianDayNumber(components.year, components.month, components.day);
+  }
+  if (calendar === 'julian') {
+    return julianDayNumber(components.year, components.month, components.day);
+  }
+  if (calendar === 'standard') {
+    return components.year > 1582
+      || (components.year === 1582 && (components.month > 10 || (components.month === 10 && components.day >= 15)))
+      ? gregorianDayNumber(components.year, components.month, components.day)
+      : julianDayNumber(components.year, components.month, components.day);
+  }
+  return fixedCalendarDayNumber(components, calendar);
+}
+
+function fromDayNumber(
+  dayNumber: number,
+  calendar: CFCalendar
+): Pick<DateTimeComponents, 'year' | 'month' | 'day'> {
+  if (calendar === 'proleptic_gregorian') return gregorianFromDayNumber(dayNumber);
+  if (calendar === 'julian') return julianFromDayNumber(dayNumber);
+  if (calendar === 'standard') {
+    return dayNumber >= STANDARD_CUTOVER_DAY
+      ? gregorianFromDayNumber(dayNumber)
+      : julianFromDayNumber(dayNumber);
+  }
+  return fixedCalendarFromDayNumber(dayNumber, calendar);
+}
+
+function asGregorianDate(components: DateTimeComponents): Date | null {
+  const date = new Date(0);
+  date.setUTCFullYear(components.year, components.month - 1, components.day);
+  date.setUTCHours(components.hour, components.minute, components.second, components.millisecond);
+  if (
+    date.getUTCFullYear() !== components.year
+    || date.getUTCMonth() + 1 !== components.month
+    || date.getUTCDate() !== components.day
+    || date.getUTCHours() !== components.hour
+    || date.getUTCMinutes() !== components.minute
+    || date.getUTCSeconds() !== components.second
+    || date.getUTCMilliseconds() !== components.millisecond
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function formatCalendarDate(components: DateTimeComponents): string {
+  const year = components.year < 0
+    ? `-${String(Math.abs(components.year)).padStart(4, '0')}`
+    : String(components.year).padStart(4, '0');
+  const month = String(components.month).padStart(2, '0');
+  const day = String(components.day).padStart(2, '0');
+  const hour = String(components.hour).padStart(2, '0');
+  const minute = String(components.minute).padStart(2, '0');
+  const second = String(components.second).padStart(2, '0');
+  const fraction = components.millisecond
+    ? `.${String(components.millisecond * 1000).padStart(6, '0')}`
+    : '';
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}${fraction}`;
+}
+
 /**
- * Convert CF time value to Date
- * @param value - Numeric time value
- * @param unitsStr - CF units string (e.g., "seconds since 1970-01-01")
- * @param calendar - CF calendar type (currently only supports proleptic_gregorian and standard)
+ * Decode a numeric CF time coordinate using arithmetic native to its calendar.
+ * Calendar dates that JavaScript cannot represent faithfully are returned as strings.
  */
-export function cfTimeToDate(value: number, unitsStr: string, calendar: string = 'proleptic_gregorian'): Date | null {
-  const parsed = parseCFTimeUnits(unitsStr);
-  if (!parsed) return null;
+export function decodeCFTime(
+  value: number,
+  unitsStr: string,
+  calendar: string = 'proleptic_gregorian'
+): Date | string | null {
+  if (!Number.isFinite(value)) return null;
+  const normalizedCalendar = normalizeCalendar(calendar);
+  const parsed = parseCalendarUnits(unitsStr);
+  if (!normalizedCalendar || !parsed || !isValidDateTime(parsed.reference, normalizedCalendar)) {
+    return null;
+  }
 
-  const { unit, referenceDate } = parsed;
-  const refTime = referenceDate.getTime();
-
-  let milliseconds: number;
-  switch (unit) {
+  let unitMilliseconds: number;
+  switch (parsed.unit) {
     case 'second':
-      milliseconds = value * 1000;
+      unitMilliseconds = 1000;
       break;
     case 'minute':
-      milliseconds = value * 60 * 1000;
+      unitMilliseconds = 60 * 1000;
       break;
     case 'hour':
-      milliseconds = value * 60 * 60 * 1000;
+      unitMilliseconds = 60 * 60 * 1000;
       break;
     case 'day':
-      milliseconds = value * 24 * 60 * 60 * 1000;
+      unitMilliseconds = MILLISECONDS_PER_DAY;
       break;
     case 'week':
-      milliseconds = value * 7 * 24 * 60 * 60 * 1000;
+      unitMilliseconds = 7 * MILLISECONDS_PER_DAY;
       break;
     case 'month':
-      // Approximate: 30 days per month
-      milliseconds = value * 30 * 24 * 60 * 60 * 1000;
+      if (normalizedCalendar !== '360_day') return null;
+      unitMilliseconds = 30 * MILLISECONDS_PER_DAY;
       break;
     case 'year':
-      // Approximate: 365.25 days per year
-      milliseconds = value * 365.25 * 24 * 60 * 60 * 1000;
-      break;
-    /* v8 ignore next 2 */
     default:
       return null;
   }
 
-  return new Date(refTime + milliseconds);
+  const referenceTime = parsed.reference.hour * 60 * 60 * 1000
+    + parsed.reference.minute * 60 * 1000
+    + parsed.reference.second * 1000
+    + parsed.reference.millisecond
+    - parsed.timezoneOffsetMinutes * 60 * 1000;
+  const elapsedMilliseconds = referenceTime + Math.round(value * unitMilliseconds);
+  const dayOffset = Math.floor(elapsedMilliseconds / MILLISECONDS_PER_DAY);
+  let timeOfDay = elapsedMilliseconds - dayOffset * MILLISECONDS_PER_DAY;
+  const dayNumber = toDayNumber(parsed.reference, normalizedCalendar) + dayOffset;
+  const date = fromDayNumber(dayNumber, normalizedCalendar);
+  const hour = Math.floor(timeOfDay / (60 * 60 * 1000));
+  timeOfDay -= hour * 60 * 60 * 1000;
+  const minute = Math.floor(timeOfDay / (60 * 1000));
+  timeOfDay -= minute * 60 * 1000;
+  const second = Math.floor(timeOfDay / 1000);
+  const components: DateTimeComponents = {
+    ...date,
+    hour,
+    minute,
+    second,
+    millisecond: timeOfDay - second * 1000
+  };
+
+  return asGregorianDate(components) ?? formatCalendarDate(components);
+}
+
+/**
+ * Convert CF time value to Date
+ * @param value - Numeric time value
+ * @param unitsStr - CF units string (e.g., "seconds since 1970-01-01")
+ * @param calendar - CF calendar type
+ */
+export function cfTimeToDate(value: number, unitsStr: string, calendar: string = 'proleptic_gregorian'): Date | null {
+  const decoded = decodeCFTime(value, unitsStr, calendar);
+  return decoded instanceof Date ? decoded : null;
 }
 
 /**
@@ -167,9 +451,12 @@ export function formatCoordinateValue(value: number | string | Date | bigint, at
     const calendar = attrs.calendar || 'proleptic_gregorian';
 
     if (units) {
-      const date = cfTimeToDate(value, units, calendar);
-      if (date) {
-        return formatDate(date);
+      const decoded = decodeCFTime(value, units, calendar);
+      if (decoded instanceof Date) {
+        return formatDate(decoded);
+      }
+      if (typeof decoded === 'string') {
+        return decoded;
       }
     }
   }
