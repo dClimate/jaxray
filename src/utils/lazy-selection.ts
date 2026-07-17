@@ -12,7 +12,6 @@ import {
   Attributes,
   CoordinateValue
 } from '../types.js';
-import { deepClone } from '../utils.js';
 import { findCoordinateIndex } from './coordinate-indexing.js';
 import { selectMultipleAtDimension } from './data-operations.js';
 
@@ -98,6 +97,17 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
     const dimAttrs = coordAttrs?.[dim] || attrs;
     if (sel === undefined) {
       const length = shape[i];
+
+      // An untouched dimension without a prior mapping is already in parent
+      // space. Preserve that identity implicitly instead of allocating O(n)
+      // mapping arrays.
+      if (!originalIndexMapping || !originalIndexMapping[dim]) {
+        indexRanges[dim] = { start: 0, stop: length };
+        newDims.push(dim);
+        newCoords[dim] = coords[dim];
+        continue;
+      }
+
       // Parent mapping: identity (all indices 0 to length-1)
       const parentMapping = Array.from({ length }, (_, j) => j);
       // Original mapping: map through to original space
@@ -225,7 +235,31 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       const parentRange = indexRanges[dim];
       const requested = requestedRanges[dim];
 
-      if (!mapping || mapping.length === 0) {
+      if (!mapping) {
+        // Identity dimensions have no mapping to translate. Pass requests
+        // through in parent space, clamped to the dimension extent.
+        if (typeof parentRange === 'number') {
+          resolved[dim] = parentRange;
+        } else if (requested === undefined) {
+          resolved[dim] = parentRange
+            ? { start: parentRange.start, stop: parentRange.stop }
+            : { start: 0, stop: 0 };
+        } else if (typeof requested === 'number') {
+          resolved[dim] = parentRange
+            ? Math.min(Math.max(requested, parentRange.start), parentRange.stop - 1)
+            : requested;
+        } else {
+          const start = parentRange?.start ?? 0;
+          const stop = parentRange?.stop ?? requested.stop;
+          resolved[dim] = {
+            start: Math.max(start, Math.min(requested.start ?? start, stop)),
+            stop: Math.max(start, Math.min(requested.stop ?? stop, stop))
+          };
+        }
+        continue;
+      }
+
+      if (mapping.length === 0) {
         if (typeof parentRange === 'number') {
           resolved[dim] = parentRange;
         } else if (parentRange) {
@@ -324,7 +358,9 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
     lazyLoader,
     dims: newDims,
     coords: newCoords,
-    attrs: deepClone(attrs),
+    // Top-level attrs remain isolated between results. Nested metadata is
+    // intentionally shared because Zarr attrs embed full coordinate arrays.
+    attrs: { ...attrs },
     name,
     originalIndexMapping: newOriginalIndexMapping
   };

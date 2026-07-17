@@ -79,14 +79,17 @@ export class DataArray {
       if (!options.lazyLoader) throw new Error('lazy DataArray requires lazyLoader');
       const shape = [...options.virtualShape];
       this._shape = shape;
-      this._attrs = options.attrs ? deepClone(options.attrs) : {};
+      // Isolate top-level attr mutations without cloning nested Zarr metadata,
+      // which may contain full coordinate arrays.
+      this._attrs = options.attrs ? { ...options.attrs } : {};
       this._name = options.name;
       this._dims = options.dims ? [...options.dims] : shape.map((_, i) => `dim_${i}`);
       this._block = createLazyBlock(shape, options.lazyLoader);
       // Store original index mapping if provided (for chained selections)
-      // Deep clone to prevent mutations from affecting the original
+      // Mapping arrays are immutable implementation metadata; only isolate the
+      // top-level dimension map between instances.
       if (options.originalIndexMapping) {
-        this._originalIndexMapping = deepClone(options.originalIndexMapping);
+        this._originalIndexMapping = { ...options.originalIndexMapping };
       }
       // coords: do NOT enforce lengths; just store if provided, else generate index arrays by size
       this._coords = {};
@@ -112,7 +115,8 @@ export class DataArray {
     const shape = getShape(data);
     this._block = createEagerBlock(data);
     this._shape = [...shape];
-    this._attrs = options.attrs ? deepClone(options.attrs) : {};
+    // Isolate top-level attr mutations while sharing nested metadata objects.
+    this._attrs = options.attrs ? { ...options.attrs } : {};
     this._name = options.name;
     // Handle dimensions
     if (options.dims) {
@@ -160,9 +164,10 @@ export class DataArray {
       }
     }
 
-    // Deep clone to prevent mutations from affecting the original
+    // Mapping arrays are immutable implementation metadata; only isolate the
+    // top-level dimension map between instances.
     if (options.originalIndexMapping) {
-      this._originalIndexMapping = deepClone(options.originalIndexMapping);
+      this._originalIndexMapping = { ...options.originalIndexMapping };
     }
   }
 
@@ -258,7 +263,7 @@ export class DataArray {
     return new DataArray(data, {
       dims: this._dims,
       coords: this._coords,
-      attrs: deepClone(this._attrs),
+      attrs: { ...this._attrs },
       name: this._name
     });
   }
