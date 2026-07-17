@@ -66,7 +66,8 @@ export function findCoordinateIndex(
       const parsed = parseUnits();
       if (!parsed) return undefined;
       let inputStr = val;
-      if (!inputStr.endsWith('Z') && !inputStr.includes('+')) {
+      const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(inputStr);
+      if (!hasTimezone) {
         inputStr = `${inputStr}Z`;
       }
       const asDate = new Date(inputStr);
