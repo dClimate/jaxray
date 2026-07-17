@@ -209,6 +209,10 @@ export class HamtStore implements AsyncReadable {
 
     private cache: Map<string, Node> = new Map();
 
+    private cacheSizes: Map<string, number> = new Map();
+
+    private cachedBytes: number = 0;
+
     private readonly maxCacheSize: number = 30_000_000; // 30MB
 
     public metadata: any;
@@ -250,17 +254,23 @@ export class HamtStore implements AsyncReadable {
         }
         const bytes = await this.ipfsElements.dagCbor.components.blockstore.get(nodeId);
         const node = Node.deserialize(bytes);
+        this.cachedBytes -= this.cacheSizes.get(cidStr) ?? 0;
         this.cache.set(cidStr, node);
+        this.cacheSizes.set(cidStr, bytes.byteLength);
+        this.cachedBytes += bytes.byteLength;
         this.maintainCacheSize();
         return node;
     }
 
     private maintainCacheSize(): void {
-        if (this.cache.size > this.maxCacheSize) {
+        while (this.cachedBytes > this.maxCacheSize) {
             const firstKey = this.cache.keys().next().value;
-            if (firstKey) {
-                this.cache.delete(firstKey);
+            if (firstKey === undefined) {
+                break;
             }
+            this.cache.delete(firstKey);
+            this.cachedBytes -= this.cacheSizes.get(firstKey) ?? 0;
+            this.cacheSizes.delete(firstKey);
         }
     }
 
