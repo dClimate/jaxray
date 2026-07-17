@@ -131,9 +131,17 @@ export function findCoordinateIndex(
         case undefined:
           // Exact match - check if close to integer
           const roundedIndex = Math.round(rawIndex);
-          const indexTolerance = tolerance !== undefined ? tolerance / Math.abs(step) : 1e-3;
-          if (Math.abs(rawIndex - roundedIndex) > indexTolerance) {
-            throw new Error(`Coordinate value '${value}' not found in dimension '${dim}' (no exact match)`);
+          if (tolerance !== undefined) {
+            const indexTolerance = tolerance / Math.abs(step);
+            if (Math.abs(rawIndex - roundedIndex) > indexTolerance) {
+              throw new Error(`Coordinate value '${value}' not found in dimension '${dim}' (no exact match)`);
+            }
+          } else if (roundedIndex >= 0 && roundedIndex < numCoords.length) {
+            const actualValue = numCoords[roundedIndex];
+            const roundingTolerance = Math.max(Math.abs(numericValue), Math.abs(actualValue), 1) * 1e-9;
+            if (Math.abs(numericValue - actualValue) > roundingTolerance) {
+              throw new Error(`Coordinate value '${value}' not found in dimension '${dim}' (no exact match)`);
+            }
           }
           index = roundedIndex;
           break;
