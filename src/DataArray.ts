@@ -304,7 +304,8 @@ export class DataArray {
       });
     }
 
-    const newData = this._selectData(selection, options);
+    const selectedIndices: { [dimension: string]: number[] } = {};
+    const newData = this._selectData(selection, options, selectedIndices);
     const newDims: DimensionName[] = [];
     const newCoords: Coordinates = {};
     const newShape = getShape(newData);
@@ -325,7 +326,7 @@ export class DataArray {
         if (selection[dim] !== undefined) {
           const sel = selection[dim];
           if (Array.isArray(sel)) {
-            newCoords[dim] = sel as CoordinateValue[];
+            newCoords[dim] = selectedIndices[dim].map(index => this._coords[dim][index]);
           } else if (typeof sel === 'object' && 'start' in sel) {
             const { start, stop } = sel;
             const coordSlice = this._getCoordinateSlice(dim, start, stop);
@@ -1321,7 +1322,11 @@ export class DataArray {
   }
 
 
-  private _selectData(selection: Selection, options?: SelectionOptions): NDArray {
+  private _selectData(
+    selection: Selection,
+    options?: SelectionOptions,
+    selectedIndices?: { [dimension: string]: number[] }
+  ): NDArray {
     let result: any = this._block.materialize();
     let dimensionsDropped = 0;
 
@@ -1348,6 +1353,7 @@ export class DataArray {
         const coordAttrs = (this._attrs as any)?._coordAttrs;
         const dimAttrs = coordAttrs?.[dim] || this._attrs;
         const indices = sel.map(v => findCoordinateIndex(this._coords[dim], v, options, dim, dimAttrs));
+        if (selectedIndices) selectedIndices[dim] = indices;
         result = selectMultipleAtDimension(result, currentDimIndex, indices);
       } else if (typeof sel === 'object' && 'start' in sel) {
         // Slice selection
