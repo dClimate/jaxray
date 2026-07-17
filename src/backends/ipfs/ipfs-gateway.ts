@@ -128,6 +128,8 @@ export interface KuboCASOptions {
   hasher?: string; // name passed to Kubo /api/v0/add hash=
   rpcBaseUrl?: string | null;
   gatewayBaseUrl?: string | null;
+  fetchFn?: typeof fetch;
+  dispatcher?: unknown;
   concurrency?: number;
   headers?: Record<string, string>;
   auth?: { username: string; password: string } | null;
@@ -149,6 +151,8 @@ export class KuboCAS extends ContentAddressedStore {
   private readonly sem: Semaphore;
   private readonly headers?: Record<string, string>;
   private readonly authHeader?: string;
+  private readonly fetchFn?: typeof fetch;
+  private readonly dispatcher?: unknown;
   private readonly maxRetries: number;
   private readonly initialDelay: number;
   private readonly backoffFactor: number;
@@ -160,6 +164,8 @@ export class KuboCAS extends ContentAddressedStore {
       hasher = "blake3",
       rpcBaseUrl = KuboCAS.KUBO_DEFAULT_LOCAL_RPC_BASE_URL,
       gatewayBaseUrl = KuboCAS.KUBO_DEFAULT_LOCAL_GATEWAY_BASE_URL,
+      fetchFn,
+      dispatcher,
       concurrency = 32,
       headers,
       auth = null,
@@ -193,6 +199,8 @@ export class KuboCAS extends ContentAddressedStore {
 
     this.sem = new Semaphore(concurrency);
     this.headers = headers;
+    this.fetchFn = fetchFn;
+    this.dispatcher = dispatcher;
     if (auth) {
       // Use btoa for browser compatibility instead of Buffer
       const credentials = `${auth.username}:${auth.password}`;
@@ -211,6 +219,13 @@ export class KuboCAS extends ContentAddressedStore {
     if (this.authHeader) h.set("Authorization", this.authHeader);
     if (extra) for (const [k, v] of Object.entries(extra)) h.set(k, v);
     return h;
+  }
+
+  private request(input: Parameters<typeof fetch>[0], init: RequestInit): Promise<Response> {
+    const requestInit = this.dispatcher === undefined
+      ? init
+      : ({ ...init, dispatcher: this.dispatcher } as RequestInit);
+    return (this.fetchFn ?? fetch)(input, requestInit);
   }
 
   private async retrying<T>(fn: () => Promise<T>): Promise<T> {
@@ -244,7 +259,7 @@ export class KuboCAS extends ContentAddressedStore {
         // Blob is widely supported; for Node 18+, global Blob exists
         form.append("file", new Blob([data]));
 
-        const res = await fetch(this.rpcUrl, {
+        const res = await this.request(this.rpcUrl, {
           method: "POST",
           headers: this.buildHeaders(),
           body: form,
@@ -294,7 +309,7 @@ export class KuboCAS extends ContentAddressedStore {
 
     return this.sem.withPermit(async () => {
       return this.retrying(async () => {
-        const res = await fetch(url, {
+        const res = await this.request(url, {
           method: "GET",
           headers: this.buildHeaders(headers),
         });
@@ -328,7 +343,7 @@ export class KuboCAS extends ContentAddressedStore {
   async pin_cid(cid: CID, targetRpc = KuboCAS.KUBO_DEFAULT_LOCAL_RPC_BASE_URL): Promise<void> {
     const url = `${targetRpc.replace(/\/+$/, "")}/api/v0/pin/add?recursive=true&arg=${encodeURIComponent(String(cid))}`;
     await this.sem.withPermit(async () => {
-      const res = await fetch(url, { method: "POST", headers: this.buildHeaders() });
+      const res = await this.request(url, { method: "POST", headers: this.buildHeaders() });
       if (!res.ok) throw new Error(`pin/add failed: ${res.status} ${res.statusText}`);
     });
   }
@@ -336,7 +351,7 @@ export class KuboCAS extends ContentAddressedStore {
   async unpin_cid(cid: CID, targetRpc = KuboCAS.KUBO_DEFAULT_LOCAL_RPC_BASE_URL): Promise<void> {
     const url = `${targetRpc.replace(/\/+$/, "")}/api/v0/pin/rm?recursive=true&arg=${encodeURIComponent(String(cid))}`;
     await this.sem.withPermit(async () => {
-      const res = await fetch(url, { method: "POST", headers: this.buildHeaders() });
+      const res = await this.request(url, { method: "POST", headers: this.buildHeaders() });
       if (!res.ok) throw new Error(`pin/rm failed: ${res.status} ${res.statusText}`);
     });
   }
@@ -347,7 +362,7 @@ export class KuboCAS extends ContentAddressedStore {
     params.append("arg", String(oldId));
     params.append("arg", String(newId));
     await this.sem.withPermit(async () => {
-      const res = await fetch(`${url}?${params.toString()}`, {
+      const res = await this.request(`${url}?${params.toString()}`, {
         method: "POST",
         headers: this.buildHeaders(),
       });
@@ -358,7 +373,7 @@ export class KuboCAS extends ContentAddressedStore {
   async pin_ls(targetRpc = KuboCAS.KUBO_DEFAULT_LOCAL_RPC_BASE_URL): Promise<Array<Record<string, unknown>>> {
     const url = `${targetRpc.replace(/\/+$/, "")}/api/v0/pin/ls`;
     return this.sem.withPermit(async () => {
-      const res = await fetch(url, { method: "POST", headers: this.buildHeaders() });
+      const res = await this.request(url, { method: "POST", headers: this.buildHeaders() });
       if (!res.ok) throw new Error(`pin/ls failed: ${res.status} ${res.statusText}`);
       const json = await res.json() as { Keys?: Record<string, { Type: string }> };
       // Kubo returns { Keys: { "<cid>": { Type: "recursive" } , ... } }

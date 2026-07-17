@@ -181,6 +181,26 @@ const customElements = createIpfsElements('https://ipfs.my-org.dev');
 const { type, store } = await openIpfsStore(cid, { ipfsElements: customElements });
 ```
 
+#### HTTP/2 gateway connections in Node.js
+
+Node.js 26 and newer negotiate HTTP/2 for TLS gateways automatically. On Node.js 24 and older, install `undici@7` and pass an HTTP/2-enabled dispatcher to `KuboCAS`:
+
+```bash
+npm install undici@7
+```
+
+```typescript
+import { KuboCAS } from '@dclimate/jaxray';
+import { Agent } from 'undici';
+
+const gateway = new KuboCAS({
+  gatewayBaseUrl: 'https://ipfs.my-org.dev',
+  dispatcher: new Agent({ allowH2: true, connections: 2 })
+});
+```
+
+Use undici 7 for this setup: adding undici 8 as a dependency is incompatible with Node's bundled `fetch` dispatcher ([nodejs/undici#5500](https://github.com/nodejs/undici/issues/5500)). Local Kubo gateways using plain HTTP are unaffected and need no dispatcher.
+
 ### Encryption and Decryption
 
 jaxray supports transparent encryption and decryption of Zarr datasets using XChaCha20-Poly1305 authenticated encryption. This provides both confidentiality and integrity protection for your data.
