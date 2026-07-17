@@ -219,11 +219,21 @@ export function findIndexFallback(
   }
 
   const index = coords.indexOf(value);
-  if (index === -1) {
-    throw new Error(`Coordinate value '${value}' not found in dimension`);
+  if (index !== -1) {
+    return index;
   }
 
-  return index;
+  if (typeof value === 'string') {
+    const { numValue, numCoords } = toNumericForComparison(value, coords);
+    if (numValue !== undefined && numCoords) {
+      const dateIndex = numCoords.indexOf(numValue);
+      if (dateIndex !== -1) {
+        return dateIndex;
+      }
+    }
+  }
+
+  throw new Error(`Coordinate value '${value}' not found in dimension`);
 }
 
 /**
