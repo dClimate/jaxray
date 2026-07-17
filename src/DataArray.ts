@@ -304,7 +304,8 @@ export class DataArray {
       });
     }
 
-    const newData = this._selectData(selection, options);
+    const selectedIndices: { [dimension: string]: number[] } = {};
+    const newData = this._selectData(selection, options, selectedIndices);
     const newDims: DimensionName[] = [];
     const newCoords: Coordinates = {};
     const newShape = getShape(newData);
@@ -325,7 +326,7 @@ export class DataArray {
         if (selection[dim] !== undefined) {
           const sel = selection[dim];
           if (Array.isArray(sel)) {
-            newCoords[dim] = sel as CoordinateValue[];
+            newCoords[dim] = selectedIndices[dim].map(index => this._coords[dim][index]);
           } else if (typeof sel === 'object' && 'start' in sel) {
             const { start, stop } = sel;
             const coordSlice = this._getCoordinateSlice(dim, start, stop, options);
@@ -472,28 +473,94 @@ export class DataArray {
    * Supports negative indexing (Python-style): -1 = last, -2 = second-to-last, etc.
    */
   async isel(selection: { [dimension: string]: number | number[] }): Promise<DataArray> {
-    const indexSelection: Selection = {};
+    const indexSelection: { [dimension: string]: number | number[] } = {};
 
     for (const [dim, sel] of Object.entries(selection)) {
-      const coords = this._coords[dim];
-      if (!coords) continue;
+      const dimIndex = this._getDimIndex(dim);
+      if (dimIndex === -1) continue;
+      const length = this._shape[dimIndex];
+      const normalizeIndex = (requested: number): number => {
+        const index = requested < 0 ? length + requested : requested;
+        if (!Number.isInteger(requested) || index < 0 || index >= length) {
+          throw new RangeError(
+            `Index ${requested} out of bounds for dimension '${dim}' of length ${length}`
+          );
+        }
+        return index;
+      };
 
       if (typeof sel === 'number') {
-        // Support negative indexing (Python-style: -1 = last, -2 = second-to-last, etc.)
-        const index = sel < 0 ? coords.length + sel : sel;
-        const coordValue = coords[index];
-        indexSelection[dim] = coordValue;
+        indexSelection[dim] = normalizeIndex(sel);
       } else if (Array.isArray(sel)) {
-        // Support negative indexing in arrays
-        const coordValues = sel.map(i => {
-          const index = i < 0 ? coords.length + i : i;
-          return coords[index];
-        });
-        indexSelection[dim] = coordValues;
+        indexSelection[dim] = sel.map(normalizeIndex);
       }
     }
 
-    return await this.sel(indexSelection);
+    if (isLazyBlock(this._block)) {
+      const result = performLazySelection({
+        selection: indexSelection,
+        positional: true,
+        dims: this._dims,
+        shape: this._shape,
+        coords: this._coords,
+        attrs: this._attrs,
+        name: this._name,
+        originalIndexMapping: this._originalIndexMapping,
+        lazyLoader: this._block.fetch
+      });
+
+      if (result.dims.length === 0) {
+        const data = await result.lazyLoader({});
+        return new DataArray(data, {
+          dims: result.dims,
+          coords: result.coords,
+          attrs: result.attrs,
+          name: result.name
+        });
+      }
+
+      return new DataArray(null, {
+        lazy: true,
+        virtualShape: result.virtualShape,
+        lazyLoader: result.lazyLoader,
+        dims: result.dims,
+        coords: result.coords,
+        attrs: result.attrs,
+        name: result.name,
+        originalIndexMapping: result.originalIndexMapping
+      });
+    }
+
+    let data: any = this._block.materialize();
+    let dimensionsDropped = 0;
+    const dims: DimensionName[] = [];
+    const coords: Coordinates = {};
+
+    for (let i = 0; i < this._dims.length; i++) {
+      const dim = this._dims[i];
+      const selected = indexSelection[dim];
+
+      if (typeof selected === 'number') {
+        data = selectAtDimension(data, i - dimensionsDropped, selected);
+        dimensionsDropped++;
+        continue;
+      }
+
+      dims.push(dim);
+      if (Array.isArray(selected)) {
+        data = selectMultipleAtDimension(data, i - dimensionsDropped, selected);
+        coords[dim] = selected.map(index => this._coords[dim][index]);
+      } else {
+        coords[dim] = this._coords[dim];
+      }
+    }
+
+    return new DataArray(data, {
+      dims,
+      coords,
+      attrs: this._attrs,
+      name: this._name
+    });
   }
 
   /**
@@ -1321,7 +1388,11 @@ export class DataArray {
   }
 
 
-  private _selectData(selection: Selection, options?: SelectionOptions): NDArray {
+  private _selectData(
+    selection: Selection,
+    options?: SelectionOptions,
+    selectedIndices?: { [dimension: string]: number[] }
+  ): NDArray {
     let result: any = this._block.materialize();
     let dimensionsDropped = 0;
 
@@ -1348,6 +1419,7 @@ export class DataArray {
         const coordAttrs = (this._attrs as any)?._coordAttrs;
         const dimAttrs = coordAttrs?.[dim] || this._attrs;
         const indices = sel.map(v => findCoordinateIndex(this._coords[dim], v, options, dim, dimAttrs));
+        if (selectedIndices) selectedIndices[dim] = indices;
         result = selectMultipleAtDimension(result, currentDimIndex, indices);
       } else if (typeof sel === 'object' && 'start' in sel) {
         // Slice selection

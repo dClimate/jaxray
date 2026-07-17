@@ -37,6 +37,7 @@ export function mapIndexToOriginal(
  */
 export interface LazySelectionParams {
   selection: Selection;
+  positional?: boolean;
   options?: SelectionOptions;
   dims: DimensionName[];
   shape: number[];
@@ -67,6 +68,7 @@ export interface LazySelectionResult {
 export function performLazySelection(params: LazySelectionParams): LazySelectionResult {
   const {
     selection,
+    positional = false,
     options,
     dims,
     shape,
@@ -85,7 +87,7 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
   const parentIndexMapping: { [dim: string]: number[] } = {}; // Maps to parent virtual space
   // Track which dimensions use discrete (non-contiguous) index selection.
   // After the loader fetches a contiguous range, these dimensions need post-fetch extraction.
-  const discreteSelectionOffsets: { [dim: string]: number[] } = {};
+  const discreteSelectionDimensions = new Set<DimensionName>();
 
   // Get coordinate attributes for time conversion
   const coordAttrs = (attrs as any)?._coordAttrs;
@@ -124,15 +126,16 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       typeof sel === 'bigint' ||
       sel instanceof Date
     ) {
-      const index = findCoordinateIndex(coords[dim], sel, options, dim, dimAttrs);
-      const originalIndex = mapIndexToOriginal(originalIndexMapping, dim, index);
-      indexRanges[dim] = originalIndex;
-      fixedOriginalIndices[dim] = originalIndex;
+      const index = positional
+        ? sel as number
+        : findCoordinateIndex(coords[dim], sel, options, dim, dimAttrs);
+      indexRanges[dim] = index;
+      fixedOriginalIndices[dim] = index;
     } else if (Array.isArray(sel)) {
       // xarray-compatible: array selection picks discrete points, not a contiguous range.
-      const indices = sel.map(v =>
-        findCoordinateIndex(coords[dim], v, options, dim, dimAttrs)
-      );
+      const indices = positional
+        ? sel as number[]
+        : sel.map(v => findCoordinateIndex(coords[dim], v, options, dim, dimAttrs));
 
       // Parent mapping: only the exact requested indices (discrete, possibly non-contiguous)
       const parentMapping = indices;
@@ -155,8 +158,7 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       newCoords[dim] = indices.map(idx => coords[dim][idx]);
       newOriginalIndexMapping[dim] = mapping;
       parentIndexMapping[dim] = parentMapping;
-      // Store offsets relative to the contiguous fetch range so we can extract discrete points
-      discreteSelectionOffsets[dim] = indices.map(idx => idx - minIdx);
+      discreteSelectionDimensions.add(dim);
     } else if (sel && typeof sel === 'object' && ('start' in sel || 'stop' in sel)) {
       const { start, stop } = sel as { start?: CoordinateValue; stop?: CoordinateValue };
       const startIndex = start !== undefined ?
@@ -210,6 +212,7 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
 
   const lazyLoader = async (requestedRanges: Record<string, LazyIndexRange>) => {
     const resolved: Record<string, LazyIndexRange> = {};
+    const discreteSelectionOffsets: { [dim: string]: number[] } = {};
 
     for (const dim of parentDims) {
       if (fixedOriginalIndices[dim] !== undefined) {
@@ -238,6 +241,13 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       const maxOriginalExclusive = maxOriginal + 1;
 
       if (requested === undefined) {
+        if (discreteSelectionDimensions.has(dim)) {
+          const rangeStart = Math.min(...mapping);
+          const rangeStop = Math.max(...mapping) + 1;
+          resolved[dim] = { start: rangeStart, stop: rangeStop };
+          discreteSelectionOffsets[dim] = mapping.map(index => index - rangeStart);
+          continue;
+        }
         resolved[dim] = {
           start: minOriginal,
           stop: maxOriginalExclusive
@@ -246,18 +256,13 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       }
 
       if (typeof requested === 'number') {
-        if (requested >= 0 && requested < mapping.length) {
-          const originalIndex = mapping[requested];
-          if (originalIndex === undefined) {
-            throw new Error(
-              `Lazy selection index ${requested} out of bounds for dimension '${dim}' of length ${mapping.length}`
-            );
-          }
-          resolved[dim] = originalIndex;
-        } else {
-          const clampedOriginal = Math.min(Math.max(requested, minOriginal), maxOriginal);
-          resolved[dim] = clampedOriginal;
+        const originalIndex = mapping[requested];
+        if (requested < 0 || requested >= mapping.length || originalIndex === undefined) {
+          throw new Error(
+            `Lazy selection index ${requested} out of bounds for dimension '${dim}' of length ${mapping.length}`
+          );
         }
+        resolved[dim] = originalIndex;
         continue;
       }
 
@@ -272,10 +277,20 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
         Math.min(stopPos, mapping.length)
       );
 
-      resolved[dim] = {
-        start: mapping[clampedStart],
-        stop: mapping[clampedStopIdx - 1] + 1
-      };
+      if (discreteSelectionDimensions.has(dim)) {
+        const selectedMapping = mapping.slice(clampedStart, clampedStopIdx);
+        const resolvedStart = Math.min(...selectedMapping);
+        resolved[dim] = {
+          start: resolvedStart,
+          stop: Math.max(...selectedMapping) + 1
+        };
+        discreteSelectionOffsets[dim] = selectedMapping.map(index => index - resolvedStart);
+      } else {
+        resolved[dim] = {
+          start: mapping[clampedStart],
+          stop: mapping[clampedStopIdx - 1] + 1
+        };
+      }
     }
 
     let result = await loader(resolved);
@@ -288,12 +303,17 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       const dim = resultDims[d];
       const offsets = discreteSelectionOffsets[dim];
       if (!offsets) continue;
+      if (typeof requestedRanges[dim] === 'number') continue;
 
       // Check if offsets are already contiguous (no extraction needed)
       const isContiguous = offsets.every((v, i) => i === 0 || v === offsets[i - 1] + 1);
       if (isContiguous && offsets.length === (Math.max(...offsets) - Math.min(...offsets) + 1)) continue;
 
-      result = selectMultipleAtDimension(result, d, offsets);
+      const droppedPrecedingDims = resultDims
+        .slice(0, d)
+        .filter(precedingDim => typeof requestedRanges[precedingDim] === 'number')
+        .length;
+      result = selectMultipleAtDimension(result, d - droppedPrecedingDims, offsets);
     }
 
     return result;
