@@ -23,6 +23,17 @@ export type DataValue = number | string | boolean | null;
 export type NDArray = DataValue | DataValue[] | DataValue[][] | DataValue[][][] | DataValue[][][][];
 
 /**
+ * Row-major data paired with its logical shape. Internal loaders use this
+ * representation to preserve decoded TypedArrays until nesting is requested.
+ */
+export interface FlatData {
+  data: ArrayLike<DataValue>;
+  shape: number[];
+}
+
+export type DataArrayInput = NDArray | FlatData;
+
+/**
  * Coordinates mapping dimension names to coordinate values
  */
 export interface Coordinates {
@@ -69,7 +80,9 @@ export type LazyIndexRange = { start: number; stop: number } | number;
 /**
  * Loader function signature for lazy DataArrays
  */
-export type LazyLoader = (ranges: { [dimension: string]: LazyIndexRange }) => Promise<NDArray> | NDArray;
+export type LazyLoader = (
+  ranges: { [dimension: string]: LazyIndexRange }
+) => Promise<DataArrayInput> | DataArrayInput;
 
 /**
  * Options for creating a Dataset

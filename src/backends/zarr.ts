@@ -2,8 +2,7 @@
 import * as zarr from "zarrita";
 import { Dataset } from "../Dataset.js";
 import { DataArray } from "../DataArray.js";
-import { reshapeFlat } from "../utils.js";
-import { DataValue, NDArray } from "../types.js";
+import { DataValue } from "../types.js";
 import { cfTimeToDate, isTimeCoordinate } from "../time/cf-time.js";
 
 function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | undefined): any[] {
@@ -346,10 +345,10 @@ export class ZarrBackend {
           return scalarValue as unknown as DataValue;
         }
 
-        // Handle array result: reshape directly from the decoded (typed) array,
-        // avoiding a boxed Array.from copy of the whole selection.
+        // Preserve zarrita's decoded TypedArray and carry its logical shape.
+        // Nesting is deferred until DataArray.values/materialize is requested.
         const flatData = (result.data !== undefined ? result.data : result) as ArrayLike<DataValue>;
-        return reshapeFlat(flatData, resultShape);
+        return { data: flatData, shape: resultShape };
       };
 
       dataVars[arr.name] = new DataArray(null, {

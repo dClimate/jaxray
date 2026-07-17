@@ -10,10 +10,14 @@ import {
   SelectionOptions,
   LazyIndexRange,
   Attributes,
-  CoordinateValue
+  CoordinateValue,
+  DataArrayInput,
+  FlatData
 } from '../types.js';
 import { findCoordinateIndex } from './coordinate-indexing.js';
 import { selectMultipleAtDimension } from './data-operations.js';
+import { isFlatData, selectFlatData, stitchFlatData } from '../core/data-block.js';
+import { reshapeFlat } from '../utils.js';
 
 const DISCRETE_FETCH_GAP = 16;
 
@@ -93,7 +97,7 @@ export interface LazySelectionParams {
   attrs: Attributes;
   name?: string;
   originalIndexMapping?: { [dimension: string]: number[] };
-  lazyLoader: (ranges: Record<string, LazyIndexRange>) => Promise<any>;
+  lazyLoader: (ranges: Record<string, LazyIndexRange>) => Promise<DataArrayInput>;
 }
 
 /**
@@ -101,7 +105,7 @@ export interface LazySelectionParams {
  */
 export interface LazySelectionResult {
   virtualShape: number[];
-  lazyLoader: (ranges: Record<string, LazyIndexRange>) => Promise<any>;
+  lazyLoader: (ranges: Record<string, LazyIndexRange>) => Promise<DataArrayInput>;
   dims: DimensionName[];
   coords: Coordinates;
   attrs: Attributes;
@@ -414,8 +418,8 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
     // returned a contiguous range. Extract only the exact requested indices.
     // Process in reverse dim order so earlier extractions don't shift later dim positions.
     const resultDims = newDims;
-    const extractDiscreteSelections = (loaded: any): any => {
-      let result = loaded;
+    const extractDiscreteSelections = (loaded: DataArrayInput): DataArrayInput => {
+      let result: DataArrayInput = loaded;
       for (let d = resultDims.length - 1; d >= 0; d--) {
         const dim = resultDims[d];
         const offsets = discreteSelectionOffsets[dim];
@@ -430,7 +434,13 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
           .slice(0, d)
           .filter(precedingDim => typeof requestedRanges[precedingDim] === 'number')
           .length;
-        result = selectMultipleAtDimension(result, d - droppedPrecedingDims, offsets);
+        const currentDimIndex = d - droppedPrecedingDims;
+        result = isFlatData(result)
+          ? selectFlatData(
+              result,
+              result.shape.map((_, index) => index === currentDimIndex ? offsets : undefined)
+            )
+          : selectMultipleAtDimension(result, currentDimIndex, offsets);
       }
       return result;
     };
@@ -450,11 +460,28 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       .filter(precedingDim => typeof requestedRanges[precedingDim] === 'number')
       .length;
 
+    const extractedResults = runResults.map(extractDiscreteSelections);
+    const stitchedDimIndex = dimPosition - droppedPrecedingDims;
+    const locationsByIndex = new Map<number, { sourceIndex: number; offset: number }>();
+    let sourceIndex = 0;
+    for (const index of [...new Set(splitCandidate.indices)].sort((a, b) => a - b)) {
+      while (index >= splitCandidate.runs[sourceIndex].stop) sourceIndex++;
+      locationsByIndex.set(index, {
+        sourceIndex,
+        offset: index - splitCandidate.runs[sourceIndex].start
+      });
+    }
+    const locations = splitCandidate.indices.map(index => locationsByIndex.get(index)!);
+
+    if (extractedResults.every(isFlatData)) {
+      return stitchFlatData(extractedResults as FlatData[], locations, stitchedDimIndex);
+    }
+
     return stitchDiscreteFetchRuns(
-      runResults.map(extractDiscreteSelections),
+      extractedResults.map(result => isFlatData(result) ? reshapeFlat(result.data, result.shape) : result),
       splitCandidate.runs,
       splitCandidate.indices,
-      dimPosition - droppedPrecedingDims
+      stitchedDimIndex
     );
   };
 

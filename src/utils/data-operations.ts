@@ -3,7 +3,7 @@
  * Handles array traversal, selection, slicing, and mathematical operations
  */
 
-import { NDArray, DataValue } from '../types.js';
+import { NDArray, DataValue, FlatData } from '../types.js';
 import { deepClone } from '../utils.js';
 
 /**
@@ -46,6 +46,80 @@ export function countAll(data: NDArray): number {
   }
 
   return count;
+}
+
+/** Sum numeric values directly from row-major storage. */
+export function sumFlat(data: ArrayLike<DataValue>): number {
+  let sum = 0;
+  for (let index = 0; index < data.length; index++) {
+    const value = data[index];
+    if (typeof value === 'number' && !Number.isNaN(value)) sum += value;
+  }
+  return sum;
+}
+
+/** Count valid numeric values directly from row-major storage. */
+export function countFlat(data: ArrayLike<DataValue>): number {
+  let count = 0;
+  for (let index = 0; index < data.length; index++) {
+    const value = data[index];
+    if (typeof value === 'number' && !Number.isNaN(value)) count++;
+  }
+  return count;
+}
+
+/**
+ * Reduce one dimension of row-major storage without constructing the source's
+ * nested representation. Reduction results remain flat until a consumer asks
+ * the resulting DataArray for `.values`.
+ */
+export function reduceFlatAlongDimension(
+  source: FlatData,
+  dimIndex: number,
+  operation: 'sum' | 'mean'
+): FlatData {
+  const outputShape = source.shape.filter((_, index) => index !== dimIndex);
+  const outputSize = outputShape.reduce((size, dimension) => size * dimension, 1);
+  const output = new Array<DataValue>(outputSize);
+  const sourceStrides = new Array(source.shape.length);
+  let stride = 1;
+  for (let dim = source.shape.length - 1; dim >= 0; dim--) {
+    sourceStrides[dim] = stride;
+    stride *= source.shape[dim];
+  }
+
+  for (let outputOffset = 0; outputOffset < outputSize; outputOffset++) {
+    let remainder = outputOffset;
+    let sourceBaseOffset = 0;
+    let outputDim = outputShape.length - 1;
+    for (let dim = source.shape.length - 1; dim >= 0; dim--) {
+      if (dim === dimIndex) continue;
+      const index = remainder % outputShape[outputDim];
+      remainder = Math.floor(remainder / outputShape[outputDim]);
+      sourceBaseOffset += index * sourceStrides[dim];
+      outputDim--;
+    }
+
+    const startAtFirstValue = operation === 'sum' && dimIndex === 0 && source.shape.length > 1;
+    let sum: any = startAtFirstValue
+      ? source.data[sourceBaseOffset]
+      : 0;
+    let count = 0;
+    for (let index = startAtFirstValue ? 1 : 0; index < source.shape[dimIndex]; index++) {
+      const value = source.data[sourceBaseOffset + index * sourceStrides[dimIndex]];
+      if (operation === 'sum') {
+        sum = sum + (value as any);
+      } else if (typeof value === 'number' && !Number.isNaN(value)) {
+        sum += value;
+        count++;
+      }
+    }
+    output[outputOffset] = operation === 'mean'
+      ? (count === 0 ? Number.NaN : sum / count)
+      : sum;
+  }
+
+  return { data: output, shape: outputShape };
 }
 
 /**
