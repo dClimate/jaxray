@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { ZarrBackend } from '../../src/backends/zarr';
-import { reshape } from '../../src/utils';
+import { reshape, reshapeFlat } from '../../src/utils';
 import { MemoryZarrStore } from '../helpers/MemoryZarrStore';
 
 interface ReshapeCase {
@@ -43,6 +43,56 @@ const cases: ReshapeCase[] = [
     label: '[1,1,2]',
     shape: [1, 1, 2],
     expected: [[[0, 1]]]
+  },
+  {
+    label: '[3,4,5]',
+    shape: [3, 4, 5],
+    expected: [
+      [
+        [0, 1, 2, 3, 4],
+        [5, 6, 7, 8, 9],
+        [10, 11, 12, 13, 14],
+        [15, 16, 17, 18, 19]
+      ],
+      [
+        [20, 21, 22, 23, 24],
+        [25, 26, 27, 28, 29],
+        [30, 31, 32, 33, 34],
+        [35, 36, 37, 38, 39]
+      ],
+      [
+        [40, 41, 42, 43, 44],
+        [45, 46, 47, 48, 49],
+        [50, 51, 52, 53, 54],
+        [55, 56, 57, 58, 59]
+      ]
+    ]
+  },
+  {
+    label: '[2,2,2,2]',
+    shape: [2, 2, 2, 2],
+    expected: [
+      [
+        [
+          [0, 1],
+          [2, 3]
+        ],
+        [
+          [4, 5],
+          [6, 7]
+        ]
+      ],
+      [
+        [
+          [8, 9],
+          [10, 11]
+        ],
+        [
+          [12, 13],
+          [14, 15]
+        ]
+      ]
+    ]
   }
 ];
 
@@ -50,16 +100,15 @@ function elementCount(shape: number[]): number {
   return shape.reduce((count, size) => count * size, 1);
 }
 
-function currentZarrConversion(data: number[] | Float64Array, shape: number[]) {
-  return reshape(Array.from(data), shape);
-}
-
 describe('zarr flat data reshape equivalence', () => {
   for (const { label, shape, expected } of cases) {
     test(`plain array preserves the legacy nested result for shape ${label}`, () => {
       const data = Array.from({ length: elementCount(shape) }, (_, index) => index);
 
-      expect(currentZarrConversion(data, shape)).toEqual(expected);
+      expect(reshapeFlat(data, shape)).toEqual(expected);
+      expect(reshapeFlat(data, shape)).toEqual(
+        reshape(Array.from(data), shape)
+      );
     });
 
     test(`Float64Array preserves the legacy nested result for shape ${label}`, () => {
@@ -68,7 +117,10 @@ describe('zarr flat data reshape equivalence', () => {
         (_, index) => index
       );
 
-      expect(currentZarrConversion(data, shape)).toEqual(expected);
+      expect(reshapeFlat(data, shape)).toEqual(expected);
+      expect(reshapeFlat(data, shape)).toEqual(
+        reshape(Array.from(data), shape)
+      );
     });
   }
 
@@ -91,6 +143,36 @@ describe('zarr flat data reshape equivalence', () => {
     expect(computed.data).toEqual([
       [0, 1, 2],
       [3, 4, 5]
+    ]);
+  });
+
+  test('backend read preserves a 3D legacy nested result', async () => {
+    const values = Float64Array.from({ length: 24 }, (_, index) => index);
+    const store = new MemoryZarrStore({
+      'zarr.json': { node_type: 'group', attributes: {} },
+      'data/zarr.json': {
+        node_type: 'array',
+        shape: [2, 3, 4],
+        data_type: 'float64',
+        dimension_names: ['t', 'y', 'x']
+      }
+    });
+    store.set('data/c/0/0/0', new Uint8Array(values.buffer.slice(0)));
+
+    const dataset = await ZarrBackend.open(store);
+    const computed = await dataset.getVariable('data').compute();
+
+    expect(computed.data).toEqual([
+      [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+        [8, 9, 10, 11]
+      ],
+      [
+        [12, 13, 14, 15],
+        [16, 17, 18, 19],
+        [20, 21, 22, 23]
+      ]
     ]);
   });
 });
