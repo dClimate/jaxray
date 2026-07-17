@@ -295,9 +295,27 @@ export class ZarrBackend {
         }
       });
 
+      function openArray() {
+        return zarr.open(zarrGroup.resolve(arr.relativePath), { kind: "array" });
+      }
+
+      let arrayNodePromise: ReturnType<typeof openArray> | undefined;
+      const getArrayNode = () => {
+        if (!arrayNodePromise) {
+          const pendingOpen = openArray();
+          arrayNodePromise = pendingOpen;
+          void pendingOpen.catch(() => {
+            if (arrayNodePromise === pendingOpen) {
+              arrayNodePromise = undefined;
+            }
+          });
+        }
+        return arrayNodePromise;
+      };
+
       // Create a lazy loader function that the DataArray can call
       const lazyLoader = async (indexRanges: { [dim: string]: { start: number; stop: number } | number }) => {
-        const arrNode = await zarr.open(zarrGroup.resolve(arr.relativePath), { kind: 'array'});
+        const arrNode = await getArrayNode();
         // Build zarr selection
         const zarrSelection: (number | any | null)[] = [];
         for (const dim of arr.dims) {
