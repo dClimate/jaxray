@@ -59,9 +59,29 @@ const RETRYABLE_NETWORK_CODES = new Set([
   "UND_ERR_BODY_TIMEOUT",
 ]);
 
+class HTTPStatusError extends Error {
+  readonly status: number;
+  readonly retryAfterSeconds?: number;
+
+  constructor(message: string, status: number, retryAfter: string | null) {
+    super(message);
+    this.name = "HTTPStatusError";
+    this.status = status;
+
+    const value = retryAfter?.trim();
+    if (value && /^\d+$/.test(value)) {
+      this.retryAfterSeconds = Math.min(Number.parseInt(value, 10), 30);
+    }
+  }
+}
+
 function isRetryableNetworkError(err: unknown, seen = new Set<unknown>()): boolean {
   if (!err || seen.has(err)) return false;
   seen.add(err);
+
+  if (err instanceof HTTPStatusError) {
+    return err.status >= 500 || err.status === 429;
+  }
 
   const error = err as {
     name?: string;
@@ -108,6 +128,8 @@ export interface KuboCASOptions {
   hasher?: string; // name passed to Kubo /api/v0/add hash=
   rpcBaseUrl?: string | null;
   gatewayBaseUrl?: string | null;
+  fetchFn?: typeof fetch;
+  dispatcher?: unknown;
   concurrency?: number;
   headers?: Record<string, string>;
   auth?: { username: string; password: string } | null;
@@ -129,6 +151,8 @@ export class KuboCAS extends ContentAddressedStore {
   private readonly sem: Semaphore;
   private readonly headers?: Record<string, string>;
   private readonly authHeader?: string;
+  private readonly fetchFn?: typeof fetch;
+  private readonly dispatcher?: unknown;
   private readonly maxRetries: number;
   private readonly initialDelay: number;
   private readonly backoffFactor: number;
@@ -140,6 +164,8 @@ export class KuboCAS extends ContentAddressedStore {
       hasher = "blake3",
       rpcBaseUrl = KuboCAS.KUBO_DEFAULT_LOCAL_RPC_BASE_URL,
       gatewayBaseUrl = KuboCAS.KUBO_DEFAULT_LOCAL_GATEWAY_BASE_URL,
+      fetchFn,
+      dispatcher,
       concurrency = 32,
       headers,
       auth = null,
@@ -173,6 +199,8 @@ export class KuboCAS extends ContentAddressedStore {
 
     this.sem = new Semaphore(concurrency);
     this.headers = headers;
+    this.fetchFn = fetchFn;
+    this.dispatcher = dispatcher;
     if (auth) {
       // Use btoa for browser compatibility instead of Buffer
       const credentials = `${auth.username}:${auth.password}`;
@@ -193,6 +221,13 @@ export class KuboCAS extends ContentAddressedStore {
     return h;
   }
 
+  private request(input: Parameters<typeof fetch>[0], init: RequestInit): Promise<Response> {
+    const requestInit = this.dispatcher === undefined
+      ? init
+      : ({ ...init, dispatcher: this.dispatcher } as RequestInit);
+    return (this.fetchFn ?? fetch)(input, requestInit);
+  }
+
   private async retrying<T>(fn: () => Promise<T>): Promise<T> {
     let attempt = 0;
     while (attempt <= this.maxRetries) {
@@ -203,9 +238,14 @@ export class KuboCAS extends ContentAddressedStore {
         if (!isRetryableNetworkError(err) || attempt > this.maxRetries) {
           throw err;
         }
-        const delay = this.initialDelay * Math.pow(this.backoffFactor, attempt - 1);
-        const jitter = delay * 0.1 * (Math.random() - 0.5);
-        await new Promise((r) => setTimeout(r, (delay + jitter) * 1000));
+        let delay: number;
+        if (err instanceof HTTPStatusError && err.retryAfterSeconds !== undefined) {
+          delay = err.retryAfterSeconds;
+        } else {
+          delay = this.initialDelay * Math.pow(this.backoffFactor, attempt - 1);
+          delay += delay * 0.1 * (Math.random() - 0.5);
+        }
+        await new Promise((r) => setTimeout(r, delay * 1000));
       }
     }
     throw new Error("Exited the retry loop unexpectedly.");
@@ -219,7 +259,7 @@ export class KuboCAS extends ContentAddressedStore {
         // Blob is widely supported; for Node 18+, global Blob exists
         form.append("file", new Blob([data]));
 
-        const res = await fetch(this.rpcUrl, {
+        const res = await this.request(this.rpcUrl, {
           method: "POST",
           headers: this.buildHeaders(),
           body: form,
@@ -227,7 +267,11 @@ export class KuboCAS extends ContentAddressedStore {
 
         if (!res.ok) {
           const text = await res.text().catch(() => "");
-          throw new Error(`Kubo add failed: ${res.status} ${res.statusText} ${text}`);
+          throw new HTTPStatusError(
+            `Kubo add failed: ${res.status} ${res.statusText} ${text}`,
+            res.status,
+            res.headers.get("Retry-After")
+          );
         }
         const json = await res.json() as { Hash: string };
         const cidStr: string = json["Hash"];
@@ -265,15 +309,31 @@ export class KuboCAS extends ContentAddressedStore {
 
     return this.sem.withPermit(async () => {
       return this.retrying(async () => {
-        const res = await fetch(url, {
+        const res = await this.request(url, {
           method: "GET",
           headers: this.buildHeaders(headers),
         });
         if (!res.ok) {
           const text = await res.text().catch(() => "");
-          throw new Error(`Kubo gateway load failed: ${res.status} ${res.statusText} ${text}`);
+          throw new HTTPStatusError(
+            `Kubo gateway load failed: ${res.status} ${res.statusText} ${text}`,
+            res.status,
+            res.headers.get("Retry-After")
+          );
+        }
+        const rangeRequested = headers["Range"] != null;
+        if (rangeRequested && res.status !== 200 && res.status !== 206) {
+          throw new Error(`Kubo gateway ranged load failed: unexpected status ${res.status} ${res.statusText}`);
         }
         const buf = new Uint8Array(await res.arrayBuffer());
+        if (rangeRequested && res.status === 200) {
+          if (offset != null) {
+            return length != null ? buf.slice(offset, offset + length) : buf.slice(offset);
+          }
+          if (suffix != null) {
+            return buf.slice(Math.max(buf.length - suffix, 0));
+          }
+        }
         return buf;
       });
     });
@@ -283,7 +343,7 @@ export class KuboCAS extends ContentAddressedStore {
   async pin_cid(cid: CID, targetRpc = KuboCAS.KUBO_DEFAULT_LOCAL_RPC_BASE_URL): Promise<void> {
     const url = `${targetRpc.replace(/\/+$/, "")}/api/v0/pin/add?recursive=true&arg=${encodeURIComponent(String(cid))}`;
     await this.sem.withPermit(async () => {
-      const res = await fetch(url, { method: "POST", headers: this.buildHeaders() });
+      const res = await this.request(url, { method: "POST", headers: this.buildHeaders() });
       if (!res.ok) throw new Error(`pin/add failed: ${res.status} ${res.statusText}`);
     });
   }
@@ -291,7 +351,7 @@ export class KuboCAS extends ContentAddressedStore {
   async unpin_cid(cid: CID, targetRpc = KuboCAS.KUBO_DEFAULT_LOCAL_RPC_BASE_URL): Promise<void> {
     const url = `${targetRpc.replace(/\/+$/, "")}/api/v0/pin/rm?recursive=true&arg=${encodeURIComponent(String(cid))}`;
     await this.sem.withPermit(async () => {
-      const res = await fetch(url, { method: "POST", headers: this.buildHeaders() });
+      const res = await this.request(url, { method: "POST", headers: this.buildHeaders() });
       if (!res.ok) throw new Error(`pin/rm failed: ${res.status} ${res.statusText}`);
     });
   }
@@ -302,7 +362,7 @@ export class KuboCAS extends ContentAddressedStore {
     params.append("arg", String(oldId));
     params.append("arg", String(newId));
     await this.sem.withPermit(async () => {
-      const res = await fetch(`${url}?${params.toString()}`, {
+      const res = await this.request(`${url}?${params.toString()}`, {
         method: "POST",
         headers: this.buildHeaders(),
       });
@@ -313,7 +373,7 @@ export class KuboCAS extends ContentAddressedStore {
   async pin_ls(targetRpc = KuboCAS.KUBO_DEFAULT_LOCAL_RPC_BASE_URL): Promise<Array<Record<string, unknown>>> {
     const url = `${targetRpc.replace(/\/+$/, "")}/api/v0/pin/ls`;
     return this.sem.withPermit(async () => {
-      const res = await fetch(url, { method: "POST", headers: this.buildHeaders() });
+      const res = await this.request(url, { method: "POST", headers: this.buildHeaders() });
       if (!res.ok) throw new Error(`pin/ls failed: ${res.status} ${res.statusText}`);
       const json = await res.json() as { Keys?: Record<string, { Type: string }> };
       // Kubo returns { Keys: { "<cid>": { Type: "recursive" } , ... } }
