@@ -962,8 +962,8 @@ export class DataArray {
     const flatData = flatten(this._block.materialize());
 
     // Helper function to round numbers
+    const factor = Math.pow(10, precision);
     const round = (value: number): number => {
-      const factor = Math.pow(10, precision);
       return Math.round(value * factor) / factor;
     };
 
@@ -1078,9 +1078,9 @@ export class DataArray {
       return undefined;
     }
 
+    const factor = precision === null ? 1 : Math.pow(10, precision);
     const round = (value: number): number => {
       if (precision === null) return value;
-      const factor = Math.pow(10, precision);
       return Math.round(value * factor) / factor;
     };
 
