@@ -3,6 +3,8 @@ import {
   DataValue,
   DataArrayInput,
   FlatData,
+  FlatDataStorage,
+  NumericTypedArray,
   LazyLoader,
   LazyIndexRange
 } from '../types.js';
@@ -37,7 +39,24 @@ export type FlatIndexSelection =
   | undefined;
 
 function expectedSize(shape: number[]): number {
-  return shape.reduce((size, dimension) => size * dimension, 1);
+  let size = 1;
+  for (const dimension of shape) {
+    if (!Number.isSafeInteger(dimension) || dimension < 0) {
+      throw new Error('Flat data shape dimensions must be non-negative safe integers');
+    }
+    size *= dimension;
+    if (!Number.isSafeInteger(size)) {
+      throw new Error('Flat data shape size exceeds the safe integer range');
+    }
+  }
+  return size;
+}
+
+function isTypedStorage(data: unknown): data is NumericTypedArray {
+  return ArrayBuffer.isView(data)
+    && !(data instanceof DataView)
+    && !(data instanceof BigInt64Array)
+    && !(data instanceof BigUint64Array);
 }
 
 export function isFlatData(value: DataArrayInput | unknown): value is FlatData {
@@ -46,34 +65,26 @@ export function isFlatData(value: DataArrayInput | unknown): value is FlatData {
   }
 
   const { data, shape } = value as FlatData;
-  const hasFlatStorage = Array.isArray(data) ||
-    (ArrayBuffer.isView(data) && !(data instanceof DataView));
+  const hasFlatStorage = Array.isArray(data) || isTypedStorage(data);
   return hasFlatStorage && Array.isArray(shape);
 }
 
-function isTypedStorage(data: ArrayLike<DataValue>): boolean {
-  return ArrayBuffer.isView(data) && !(data instanceof DataView);
-}
-
 function allocateLike(
-  source: ArrayLike<DataValue>,
+  source: FlatDataStorage,
   length: number
-): DataValue[] | { [index: number]: DataValue; length: number } {
+): FlatDataStorage {
   if (!isTypedStorage(source)) {
     return new Array<DataValue>(length);
   }
 
-  const Constructor = (source as any).constructor as new (length: number) => {
-    [index: number]: DataValue;
-    length: number;
-  };
+  const Constructor = source.constructor as unknown as new (length: number) => NumericTypedArray;
   return new Constructor(length);
 }
 
 function createEagerStorageBlock(
   shape: number[],
   nested: NDArray | undefined,
-  flat: ArrayLike<DataValue> | undefined
+  flat: FlatDataStorage | undefined
 ): EagerDataBlock {
   const normalizedShape = [...shape];
   let nestedCache = nested;
@@ -121,7 +132,7 @@ export function createEagerBlock(data: NDArray): EagerDataBlock {
 }
 
 export function createTypedBlock(
-  flat: ArrayLike<DataValue>,
+  flat: FlatDataStorage,
   shape: number[]
 ): EagerDataBlock {
   const size = expectedSize(shape);

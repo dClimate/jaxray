@@ -2,8 +2,8 @@
 import * as zarr from "zarrita";
 import { Dataset } from "../Dataset.js";
 import { DataArray } from "../DataArray.js";
-import { DataValue } from "../types.js";
-import { decodeCFTime, formatDate, isTimeCoordinate } from "../time/cf-time.js";
+import { DataValue, FlatDataStorage } from "../types.js";
+import { decodeCFTime, isTimeCoordinate } from "../time/cf-time.js";
 
 function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | undefined): any[] {
   const normalized = values.map((value) => {
@@ -26,10 +26,6 @@ function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | u
         }
         return value;
       });
-
-      if (decodedValues.some((value) => typeof value === "string")) {
-        return decodedValues.map((value) => value instanceof Date ? formatDate(value) : value);
-      }
 
       return decodedValues.map((value) => value instanceof Date ? value.toISOString() : value);
     }
@@ -352,7 +348,7 @@ export class ZarrBackend {
 
         // Preserve zarrita's decoded TypedArray and carry its logical shape.
         // Nesting is deferred until DataArray.values/materialize is requested.
-        const flatData = (result.data !== undefined ? result.data : result) as ArrayLike<DataValue>;
+        const flatData = (result.data !== undefined ? result.data : result) as FlatDataStorage;
         return { data: flatData, shape: resultShape };
       };
 

@@ -22,41 +22,66 @@ interface CoordinateNumericCacheEntry {
  */
 const coordinateNumericCache = new WeakMap<CoordinateValue[], CoordinateNumericCacheEntry>();
 
+const DATE_TIME_RE = /^([+-]?\d{4,})-(\d{1,2})-(\d{1,2})(?:(?:[tT]|\s)(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(?:\s*([zZ]|[+-]\d{2}:?\d{2}))?)?$/;
+
+function looksLikeDateTimeString(value: string): boolean {
+  return DATE_TIME_RE.test(value.trim());
+}
+
+function hasExplicitTimezone(value: string): boolean {
+  return /([zZ]|[+-]\d{2}:?\d{2})$/.test(value.trim());
+}
+
+/** Parse only complete, valid ISO-like timestamps; zone-less values mean UTC. */
 function parseDateStringAsUTC(value: string): Date {
-  let normalized = value.trim();
+  const match = value.trim().match(DATE_TIME_RE);
+  if (!match) return new Date(NaN);
 
-  if (!/[tT]/.test(normalized) && normalized.includes(' ')) {
-    const parts = normalized.split(/\s+/);
-    if (parts.length >= 2) {
-      const detachedTimezone = parts[2] && /^([zZ]|[+-]\d{2}:?\d{2})$/.test(parts[2])
-        ? parts[2]
-        : '';
-      normalized = `${parts[0]}T${parts[1]}${detachedTimezone}`;
-    }
-  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4] ?? 0);
+  const minute = Number(match[5] ?? 0);
+  const second = Number(match[6] ?? 0);
+  const millisecond = Math.floor(Number(`0.${match[7] ?? '0'}`) * 1000);
+  const timezone = match[8];
 
-  const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(normalized);
-  if (!hasTimezone && /[tT]/.test(normalized)) {
-    normalized = `${normalized}Z`;
-  }
-
-  const parsed = new Date(normalized);
-  const hasExplicitOffset = /[+-]\d{2}:?\d{2}$/.test(normalized);
-  const dateParts = value.trim().match(/^([+-]?\d+)-(\d{1,2})-(\d{1,2})/);
   if (
-    !hasExplicitOffset
-    && dateParts
-    && !Number.isNaN(parsed.getTime())
-    && (
-      parsed.getUTCFullYear() !== Number(dateParts[1])
-      || parsed.getUTCMonth() + 1 !== Number(dateParts[2])
-      || parsed.getUTCDate() !== Number(dateParts[3])
-    )
+    !Number.isSafeInteger(year)
+    || month < 1 || month > 12
+    || day < 1 || day > 31
+    || hour < 0 || hour > 23
+    || minute < 0 || minute > 59
+    || second < 0 || second > 59
   ) {
     return new Date(NaN);
   }
 
-  return parsed;
+  const local = new Date(0);
+  local.setUTCFullYear(year, month - 1, day);
+  local.setUTCHours(hour, minute, second, millisecond);
+  if (
+    local.getUTCFullYear() !== year
+    || local.getUTCMonth() + 1 !== month
+    || local.getUTCDate() !== day
+    || local.getUTCHours() !== hour
+    || local.getUTCMinutes() !== minute
+    || local.getUTCSeconds() !== second
+  ) {
+    return new Date(NaN);
+  }
+
+  let timezoneOffsetMinutes = 0;
+  if (timezone && timezone.toUpperCase() !== 'Z') {
+    const sign = timezone[0] === '-' ? -1 : 1;
+    const digits = timezone.slice(1).replace(':', '');
+    const timezoneHours = Number(digits.slice(0, 2));
+    const timezoneMinutes = Number(digits.slice(2, 4));
+    if (timezoneHours > 23 || timezoneMinutes > 59) return new Date(NaN);
+    timezoneOffsetMinutes = sign * (timezoneHours * 60 + timezoneMinutes);
+  }
+
+  return new Date(local.getTime() - timezoneOffsetMinutes * 60 * 1000);
 }
 
 /**
@@ -91,6 +116,10 @@ export function findCoordinateIndex(
     const { unit, referenceDate } = parsed;
     const diff = date.getTime() - referenceDate.getTime();
     switch (unit) {
+      case 'microsecond':
+        return diff * 1000;
+      case 'millisecond':
+        return diff;
       case 'second':
         return diff / 1000;
       case 'minute':
@@ -102,9 +131,10 @@ export function findCoordinateIndex(
       case 'week':
         return diff / (7 * 24 * 60 * 60 * 1000);
       case 'month':
-        return diff / (30 * 24 * 60 * 60 * 1000);
       case 'year':
-        return diff / (365.25 * 24 * 60 * 60 * 1000);
+        // These are calendar intervals, not fixed durations. Refuse to invent
+        // an approximate numeric label for exact/nearest coordinate lookup.
+        return undefined;
       default:
         return diff / 1000;
     }
@@ -271,12 +301,13 @@ export function findIndexFallback(
   }
 
   // Default exact match
-  // For Date values, compare by ISO string since coords may be stored as ISO strings
+  // Date labels can target mixed calendar arrays containing both representable
+  // Gregorian timestamps and calendar-only strings. Compare each usable value
+  // independently so one non-Gregorian label does not disable every Date lookup.
   if (value instanceof Date) {
-    const isoValue = value.toISOString();
     const index = coords.findIndex(c =>
       c instanceof Date ? c.getTime() === value.getTime() :
-      typeof c === 'string' ? c === isoValue :
+      typeof c === 'string' ? parseDateStringAsUTC(c).getTime() === value.getTime() :
       false
     );
     if (index !== -1) {
@@ -304,14 +335,23 @@ export function findIndexFallback(
   // Applying it to arbitrary string (categorical) coordinates causes false
   // matches: two lexically-distinct labels that parse to the same instant
   // (e.g. "2020-01-01T00:00:00Z" vs "2019-12-31T19:00:00-05:00") would match.
-  const coordsAreDateBacked = coords.length > 0 && coords[0] instanceof Date;
+  const coordsAreDateBacked = coords.some(coord => coord instanceof Date)
+    || (coords.length > 0 && coords.every(coord =>
+      typeof coord === 'string'
+      && looksLikeDateTimeString(coord)
+      && !hasExplicitTimezone(coord)
+    ));
   if (typeof value === 'string' && (timeLike || coordsAreDateBacked)) {
-    const { numValue, numCoords } = toNumericForComparison(value, coords);
-    if (numValue !== undefined && numCoords) {
-      const dateIndex = numCoords.indexOf(numValue);
-      if (dateIndex !== -1) {
-        return dateIndex;
-      }
+    const parsedValue = parseDateStringAsUTC(value);
+    if (!Number.isNaN(parsedValue.getTime())) {
+      const dateIndex = coords.findIndex(coord =>
+        coord instanceof Date
+          ? coord.getTime() === parsedValue.getTime()
+          : typeof coord === 'string'
+            ? parseDateStringAsUTC(coord).getTime() === parsedValue.getTime()
+            : false
+      );
+      if (dateIndex !== -1) return dateIndex;
     }
   }
 

@@ -3,6 +3,40 @@
  * Handles CF-compliant time coordinate conversions
  */
 
+type CFTimeUnit =
+  | 'microsecond'
+  | 'millisecond'
+  | 'second'
+  | 'minute'
+  | 'hour'
+  | 'day'
+  | 'week'
+  | 'month'
+  | 'year';
+
+const CF_TIME_UNITS_RE = /^(microseconds?|microsecs?|usecs?|us|milliseconds?|millisecs?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|min|hours?|hrs?|hr|h|days?|d|weeks?|wks?|wk|months?|mons?|mon|years?|yrs?|yr)\s+since\s+(.+)$/i;
+
+function normalizeTimeUnit(unit: string): CFTimeUnit | null {
+  const normalized = unit.toLowerCase();
+  if (/^(microseconds?|microsecs?|usecs?|us)$/.test(normalized)) return 'microsecond';
+  if (/^(milliseconds?|millisecs?|msecs?|ms)$/.test(normalized)) return 'millisecond';
+  if (/^(seconds?|secs?|s)$/.test(normalized)) return 'second';
+  if (/^(minutes?|mins?|min)$/.test(normalized)) return 'minute';
+  if (/^(hours?|hrs?|hr|h)$/.test(normalized)) return 'hour';
+  if (/^(days?|d)$/.test(normalized)) return 'day';
+  if (/^(weeks?|wks?|wk)$/.test(normalized)) return 'week';
+  if (/^(months?|mons?|mon)$/.test(normalized)) return 'month';
+  if (/^(years?|yrs?|yr)$/.test(normalized)) return 'year';
+  return null;
+}
+
+function splitTimeUnits(unitsStr: string): { unit: CFTimeUnit; reference: string } | null {
+  const match = unitsStr.match(CF_TIME_UNITS_RE);
+  if (!match) return null;
+  const unit = normalizeTimeUnit(match[1]);
+  return unit ? { unit, reference: match[2].trim() } : null;
+}
+
 /**
  * Parse CF-compliant time units string
  * Format: "<units> since <reference_date>"
@@ -12,27 +46,40 @@
  *   - "hours since 1990-01-01T00:00:00Z"
  */
 export function parseCFTimeUnits(unitsStr: string): { unit: string; referenceDate: Date } | null {
-  const match = unitsStr.match(/^(seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s+since\s+(.+)$/i);
-  if (!match) return null;
+  const parsedUnits = splitTimeUnits(unitsStr);
+  if (!parsedUnits) return null;
 
-  const unit = match[1].toLowerCase().replace(/s$/, ''); // normalize to singular
-  const dateStr = match[2].trim();
+  const { unit } = parsedUnits;
+  const dateStr = parsedUnits.reference;
 
   // Parse reference date - handle various formats (always as UTC)
   let referenceDate: Date;
   try {
     let dateStrUTC = dateStr.trim();
 
-    // If date/time separated by space, normalize to ISO 8601 with 'T'
-    if (!dateStrUTC.includes('T') && dateStrUTC.includes(' ')) {
-      const parts = dateStrUTC.split(/\s+/);
-      if (parts.length >= 2) {
-        dateStrUTC = `${parts[0]}T${parts[1]}`;
-      }
+    // If date/time are separated by spaces, consume only an optional timezone.
+    // Extra tokens are invalid rather than being silently discarded.
+    if (!/[tT]/.test(dateStrUTC) && dateStrUTC.includes(' ')) {
+      const parts = dateStrUTC.match(
+        /^(\S+)\s+(\S+)(?:\s+([zZ]|[+-]\d{1,2}(?::?\d{2})?))?$/
+      );
+      if (!parts) return null;
+      dateStrUTC = `${parts[1]}T${parts[2]}${parts[3] ?? ''}`;
+    } else {
+      dateStrUTC = dateStrUTC.replace(
+        /\s+([zZ]|[+-]\d{1,2}(?::?\d{2})?)$/,
+        '$1'
+      );
+    }
+
+    // ECMAScript Date requires an explicit minute component on numeric offsets.
+    if (/[tT]/.test(dateStrUTC)) {
+      dateStrUTC = dateStrUTC.replace(/([+-]\d{1,2})$/, '$1:00');
     }
 
     // Detect existing timezone designator (Z or ±hh[:mm])
-    const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(dateStrUTC);
+    const hasTimezone = /[tT]/.test(dateStrUTC)
+      && /([zZ]|[+-]\d{1,2}(?::?\d{2})?)$/.test(dateStrUTC);
 
     if (!hasTimezone) {
       if (dateStrUTC.includes('T')) {
@@ -74,9 +121,10 @@ interface DateTimeComponents {
 }
 
 interface ParsedCalendarUnits {
-  unit: string;
+  unit: CFTimeUnit;
   reference: DateTimeComponents;
   timezoneOffsetMinutes: number;
+  fractionCarrySeconds: number;
 }
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -106,13 +154,11 @@ function normalizeCalendar(calendar: string): CFCalendar | null {
 }
 
 function parseCalendarUnits(unitsStr: string): ParsedCalendarUnits | null {
-  const unitsMatch = unitsStr.match(
-    /^(seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s+since\s+(.+)$/i
-  );
-  if (!unitsMatch) return null;
+  const parsedUnits = splitTimeUnits(unitsStr);
+  if (!parsedUnits) return null;
 
-  const dateMatch = unitsMatch[2].trim().match(
-    /^([+-]?\d+)-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2})(?:\.(\d+))?)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i
+  const dateMatch = parsedUnits.reference.match(
+    /^([+-]?\d+)-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2})(?:\.(\d+))?)?)?\s*(Z|[+-]\d{1,2}(?::?\d{2})?)?$/i
   );
   if (!dateMatch) return null;
 
@@ -123,25 +169,28 @@ function parseCalendarUnits(unitsStr: string): ParsedCalendarUnits | null {
   let timezoneOffsetMinutes = 0;
   if (timezone && timezone.toUpperCase() !== 'Z') {
     const sign = timezone[0] === '-' ? -1 : 1;
-    const digits = timezone.slice(1).replace(':', '');
-    const timezoneHours = Number(digits.slice(0, 2));
-    const timezoneMinutes = Number(digits.slice(2, 4));
+    const digits = timezone.slice(1).split(':');
+    const compact = timezone.slice(1).replace(':', '');
+    const hasColon = digits.length === 2;
+    const timezoneHours = Number(hasColon ? digits[0] : compact.length <= 2 ? compact : compact.slice(0, -2));
+    const timezoneMinutes = Number(hasColon ? digits[1] : compact.length <= 2 ? 0 : compact.slice(-2));
     if (timezoneHours > 23 || timezoneMinutes > 59) return null;
     timezoneOffsetMinutes = sign * (timezoneHours * 60 + timezoneMinutes);
   }
 
   return {
-    unit: unitsMatch[1].toLowerCase().replace(/s$/, ''),
+    unit: parsedUnits.unit,
     reference: {
       year: Number(dateMatch[1]),
       month: Number(dateMatch[2]),
       day: Number(dateMatch[3]),
       hour: Number(dateMatch[4] ?? 0),
       minute: Number(dateMatch[5] ?? 0),
-      second: Number(dateMatch[6] ?? 0) + carriedSeconds,
+      second: Number(dateMatch[6] ?? 0),
       millisecond: roundedMilliseconds - carriedSeconds * 1000
     },
-    timezoneOffsetMinutes
+    timezoneOffsetMinutes,
+    fractionCarrySeconds: carriedSeconds
   };
 }
 
@@ -317,7 +366,7 @@ function formatCalendarDate(components: DateTimeComponents): string {
 export function decodeCFTime(
   value: number,
   unitsStr: string,
-  calendar: string = 'proleptic_gregorian'
+  calendar: string = 'standard'
 ): Date | string | null {
   if (!Number.isFinite(value)) return null;
   const normalizedCalendar = normalizeCalendar(calendar);
@@ -328,6 +377,12 @@ export function decodeCFTime(
 
   let unitMilliseconds: number;
   switch (parsed.unit) {
+    case 'microsecond':
+      unitMilliseconds = 0.001;
+      break;
+    case 'millisecond':
+      unitMilliseconds = 1;
+      break;
     case 'second':
       unitMilliseconds = 1000;
       break;
@@ -354,7 +409,7 @@ export function decodeCFTime(
 
   const referenceTime = parsed.reference.hour * 60 * 60 * 1000
     + parsed.reference.minute * 60 * 1000
-    + parsed.reference.second * 1000
+    + (parsed.reference.second + parsed.fractionCarrySeconds) * 1000
     + parsed.reference.millisecond
     - parsed.timezoneOffsetMinutes * 60 * 1000;
   const elapsedMilliseconds = referenceTime + Math.round(value * unitMilliseconds);
@@ -452,7 +507,7 @@ export function formatCoordinateValue(value: number | string | Date | bigint, at
   // Check if this is a CF time coordinate
   if (attrs && typeof value === 'number' && isTimeCoordinate(attrs)) {
     const units = attrs.units;
-    const calendar = attrs.calendar || 'proleptic_gregorian';
+    const calendar = attrs.calendar || 'standard';
 
     if (units) {
       const decoded = decodeCFTime(value, units, calendar);

@@ -127,6 +127,24 @@ describe('TypedArray-backed flat storage contract', () => {
     expect(fromInstance.flatData).toBeNull();
   });
 
+  test('flat payloads reject invalid shape dimensions before size arithmetic', () => {
+    for (const shape of [[-1], [1.5], [Number.NaN], [Number.POSITIVE_INFINITY]]) {
+      expect(() => new DataArray({ data: [], shape })).toThrow(
+        'Flat data shape dimensions must be non-negative safe integers'
+      );
+    }
+  });
+
+  test('flat and nested boolean reductions have identical numeric semantics', () => {
+    const nested = new DataArray([true, false, true]);
+    const flat = new DataArray({ data: [true, false, true], shape: [3] });
+
+    expect(flat.sum()).toBe(nested.sum());
+    expect(flat.mean()).toBe(nested.mean());
+    expect(flat.sum('dim_0')).toBe(nested.sum('dim_0'));
+    expect(flat.mean('dim_0')).toBe(nested.mean('dim_0'));
+  });
+
   test('flatData exists on eager nested arrays while allowing null', () => {
     const nested = new DataArray([[1, 2], [3, 4]], { dims: ['y', 'x'] });
     const flatData = (nested as any).flatData;

@@ -252,6 +252,26 @@ describe('zone-less datetime strings use UTC in coordinate lookups', () => {
     );
   });
 
+  test('sel exact rejects calendar overflow even when a timezone is explicit', async () => {
+    const da = new DataArray(utcHourValues(2), {
+      dims: ['time'],
+      coords: { time: utcDateCoords(2) }
+    });
+
+    await expect(da.sel({ time: '2021-02-30T00:00:00+00:00' }))
+      .rejects.toThrow('not found in dimension');
+  });
+
+  test('sel exact rejects trailing datetime tokens instead of discarding them', async () => {
+    const da = new DataArray(utcHourValues(2), {
+      dims: ['time'],
+      coords: { time: utcDateCoords(2) }
+    });
+
+    await expect(da.sel({ time: '2021-01-02 00:00:00 garbage' }))
+      .rejects.toThrow('not found in dimension');
+  });
+
   test('sel exact does not coerce categorical datetime lookalikes', async () => {
     const da = new DataArray([1, 2, 3], {
       dims: ['time'],

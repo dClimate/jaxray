@@ -3,7 +3,7 @@
  * Handles array traversal, selection, slicing, and mathematical operations
  */
 
-import { NDArray, DataValue, FlatData } from '../types.js';
+import { NDArray, DataValue, FlatData, FlatDataStorage } from '../types.js';
 import { deepClone } from '../utils.js';
 
 /**
@@ -68,21 +68,20 @@ export function countAll(data: NDArray): number {
 }
 
 /** Sum numeric values directly from row-major storage. */
-export function sumFlat(data: ArrayLike<DataValue>): number {
+export function sumFlat(data: FlatDataStorage): number {
   let sum = 0;
   for (let index = 0; index < data.length; index++) {
-    const value = data[index];
-    if (typeof value === 'number' && !Number.isNaN(value)) sum += value;
+    const numeric = toReducibleNumber(data[index]);
+    if (numeric !== undefined) sum += numeric;
   }
   return sum;
 }
 
 /** Count valid numeric values directly from row-major storage. */
-export function countFlat(data: ArrayLike<DataValue>): number {
+export function countFlat(data: FlatDataStorage): number {
   let count = 0;
   for (let index = 0; index < data.length; index++) {
-    const value = data[index];
-    if (typeof value === 'number' && !Number.isNaN(value)) count++;
+    if (toReducibleNumber(data[index]) !== undefined) count++;
   }
   return count;
 }
@@ -132,9 +131,12 @@ export function reduceFlatAlongDimension(
       const value = source.data[sourceBaseOffset + index * sourceStrides[dimIndex]];
       if (operation === 'sum') {
         sum = sum + (value as any);
-      } else if (typeof value === 'number' && !Number.isNaN(value)) {
-        sum += value;
-        count++;
+      } else {
+        const numeric = toReducibleNumber(value);
+        if (numeric !== undefined) {
+          sum += numeric;
+          count++;
+        }
       }
     }
     output[outputOffset] = operation === 'mean'

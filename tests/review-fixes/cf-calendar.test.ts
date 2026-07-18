@@ -204,6 +204,36 @@ describe('literal CF calendar contracts', () => {
 
     expect(decoded).toBeInstanceOf(Date);
     expect((decoded as Date).toISOString()).toBe('2000-01-01T00:00:01.000Z');
+
+    const minuteCarry = requireDecodeCFTime()(
+      0,
+      'seconds since 2000-01-01T00:00:59.9995'
+    );
+    expect((minuteCarry as Date).toISOString()).toBe('2000-01-01T00:01:00.000Z');
+  });
+
+  test('decodeCFTime uses the CF standard calendar by default', () => {
+    const decoded = requireDecodeCFTime()(1, 'days since 1582-10-04');
+
+    expect((decoded as Date).toISOString()).toBe('1582-10-15T00:00:00.000Z');
+    expect(cfTime.cfTimeToDate(1, 'days since 1582-10-04')?.toISOString())
+      .toBe('1582-10-05T00:00:00.000Z');
+  });
+
+  test('CF unit symbols, subsecond units, and hour-only offsets are accepted', () => {
+    expect((requireDecodeCFTime()(1, 'ms since 2000-01-01') as Date).toISOString())
+      .toBe('2000-01-01T00:00:00.001Z');
+    expect((requireDecodeCFTime()(1000, 'us since 2000-01-01') as Date).toISOString())
+      .toBe('2000-01-01T00:00:00.001Z');
+    expect((requireDecodeCFTime()(0, 'h since 2000-01-01 00:00:00 -06') as Date).toISOString())
+      .toBe('2000-01-01T06:00:00.000Z');
+    expect(cfTime.parseCFTimeUnits('h since 2000-01-01 00:00:00 -06')?.unit)
+      .toBe('hour');
+  });
+
+  test('CF unit parsing rejects trailing reference-date tokens', () => {
+    expect(cfTime.parseCFTimeUnits('days since 2000-01-01 00:00:00 garbage')).toBeNull();
+    expect(requireDecodeCFTime()(0, 'days since 2000-01-01 00:00:00 garbage')).toBeNull();
   });
 
   test('decodeCFTime pins the standard 1582 cutover and refuses gap references', () => {
@@ -275,9 +305,9 @@ describe('Zarr CF calendar coordinate decoding', () => {
     const variable = dataset.getVariable('temperature');
 
     expect(dataset.coords.time).toEqual([
-      '2000-02-29T00:00:00',
+      '2000-02-29T00:00:00.000Z',
       '2000-02-30T00:00:00',
-      '2000-03-01T00:00:00'
+      '2000-03-01T00:00:00.000Z'
     ]);
     expect((await variable.sel({ time: '2000-03-01T00:00:00' })).data).toBe(600);
     expect((await variable.sel({ time: dataset.coords.time[1] })).data).toBe(590);
@@ -297,11 +327,31 @@ describe('Zarr CF calendar coordinate decoding', () => {
     const variable = dataset.getVariable('temperature');
 
     expect(dataset.coords.time).toEqual([
-      '1850-02-28T00:00:00',
+      '1850-02-28T00:00:00.000Z',
       '1850-02-29T00:00:00',
-      '1850-03-01T00:00:00'
+      '1850-03-01T00:00:00.000Z'
     ]);
     expect((await variable.sel({ time: '1850-03-01T00:00:00' })).data).toBe(600);
+    expect((await variable.sel({ time: new Date('1850-03-01T00:00:00Z') })).data).toBe(600);
+  });
+
+  test('month-based coordinate lookup refuses fixed-duration approximations', async () => {
+    const variable = new DataArray([10, 20], {
+      dims: ['time'],
+      coords: { time: [0, 1] },
+      attrs: {
+        _coordAttrs: {
+          time: {
+            standard_name: 'time',
+            units: 'months since 2000-01-01',
+            calendar: 'noleap'
+          }
+        }
+      }
+    });
+
+    await expect(variable.sel({ time: new Date('2000-01-31T00:00:00Z') }))
+      .rejects.toThrow('not found');
   });
 });
 

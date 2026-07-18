@@ -17,6 +17,21 @@ export type CoordinateValue = number | string | Date;
  */
 export type DataValue = number | string | boolean | null;
 
+/** Typed-array storage supported by DataArray's numeric flat-data path. */
+export type NumericTypedArray =
+  | Int8Array
+  | Uint8Array
+  | Uint8ClampedArray
+  | Int16Array
+  | Uint16Array
+  | Int32Array
+  | Uint32Array
+  | Float32Array
+  | Float64Array;
+
+/** Concrete row-major storage accepted by a FlatData payload. */
+export type FlatDataStorage = DataValue[] | NumericTypedArray;
+
 /**
  * Multi-dimensional data array
  */
@@ -27,7 +42,7 @@ export type NDArray = DataValue | DataValue[] | DataValue[][] | DataValue[][][] 
  * representation to preserve decoded TypedArrays until nesting is requested.
  */
 export interface FlatData {
-  data: ArrayLike<DataValue>;
+  data: FlatDataStorage;
   shape: number[];
 }
 
