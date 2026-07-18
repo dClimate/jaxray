@@ -339,38 +339,36 @@ export class HamtStore implements AsyncReadable {
         throw new KeyError(normalizedKey);
     }
 
-    /** Fetch item data, with optional range support */
-    private async fetchItem(cid: any, range?: { offset: number; length: number }): Promise<Uint8Array> {
+    /** Fetch item data, with optional range support (byte offset/length or a suffix). */
+    private async fetchItem(
+        cid: any,
+        range?: { offset: number; length: number } | { suffix: number },
+    ): Promise<Uint8Array> {
         if (cid.code === RAW_CODEC_CODE) {
-            // Raw block: fetch entire block and slice if range is specified
+            // Raw block: fetch the (single, small) block and slice if a range is specified.
             const block = await this.ipfsElements.dagCbor.components.blockstore.get(cid);
-            if (range) {
-                const { offset, length } = range;
-                return block.slice(offset, offset + length);
+            if (!range) {
+                return block;
             }
-            return block;
+            if ("suffix" in range) {
+                return block.slice(Math.max(block.length - range.suffix, 0));
+            }
+            return block.slice(range.offset, range.offset + range.length);
         }
         if (cid.code === DAG_PB_CODEC_CODE) {
-            // UnixFS file: use range-capable unixfs.cat
-            const catOptions = range ? { offset: range.offset, length: range.length } : {};
+            // UnixFS file: use range-capable unixfs.cat. Suffix reads go straight to the
+            // gateway's native suffix range (`bytes=-N`) so we never download the whole
+            // file just to compute its size — important for large Zarr shards.
+            let catOptions: { offset?: number; length?: number; suffix?: number } = {};
+            if (range) {
+                catOptions = "suffix" in range
+                    ? { suffix: range.suffix }
+                    : { offset: range.offset, length: range.length };
+            }
             const chunks = await all(this.ipfsElements.unixfs.cat(cid, catOptions));
             return uint8ArrayConcat(chunks as Uint8Array[]);
         }
         throw new Error(`Unsupported CID codec: ${cid.code}`);
-    }
-
-    /** Get the size of an item based on its CID */
-    private async getItemSize(cid: any): Promise<number> {
-        if (cid.code === RAW_CODEC_CODE) {
-            const block = await this.ipfsElements.dagCbor.components.blockstore.get(cid);
-            return block.length;
-        }
-        if (cid.code === DAG_PB_CODEC_CODE) {
-            const chunks = await all(this.ipfsElements.unixfs.cat(cid));
-            return (chunks as Uint8Array[]).reduce((size, chunk) => size + chunk.length, 0);
-        } else {
-            throw new Error(`Unsupported CID codec: ${cid.code}`);
-        }
     }
 
     private async ensureMetadataLoaded(): Promise<void> {
@@ -450,9 +448,7 @@ export class HamtStore implements AsyncReadable {
         try {
             const cid = await this.findCIDForKey(key);
             if ("suffixLength" in range) {
-                const size = await this.getItemSize(cid);
-                const offset = size - range.suffixLength;
-                return await this.fetchItem(cid, { offset, length: range.suffixLength });
+                return await this.fetchItem(cid, { suffix: range.suffixLength });
             }
             return await this.fetchItem(cid, { offset: range.offset, length: range.length });
         } catch (e) {

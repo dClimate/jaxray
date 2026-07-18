@@ -97,8 +97,10 @@ describe('countAll', () => {
   });
 
   it('should count only valid numeric values', () => {
+    // null, NaN and the string '2' are skipped; booleans count as 1/0
+    // (consistent with sum/mean, matching numpy/xarray semantics).
     const data = [1, null, Number.NaN, '2', false];
-    expect(countAll(data)).toBe(1);
+    expect(countAll(data)).toBe(2);
   });
 });
 
@@ -115,6 +117,12 @@ describe('meanAlongDimension', () => {
   it('should skip invalid values when reducing a later dimension', () => {
     const data = [[1, null, 3], [null, Number.NaN, 6]];
     expect(meanAlongDimension(data, 1)).toEqual([2, 6]);
+  });
+
+  it('should treat booleans as 1/0 (consistent with sum), not drop them', () => {
+    // Regression: booleans were silently skipped, turning [true, false] into NaN.
+    expect(meanAlongDimension([true, false] as any, 0)).toBe(0.5);
+    expect(meanAlongDimension([[true, false], [true, true]] as any, 1)).toEqual([0.5, 1]);
   });
 });
 

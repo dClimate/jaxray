@@ -175,6 +175,40 @@ export function setAtIndex(data: NDArray, indices: number[], value: DataValue): 
 }
 
 /**
+ * Internal Zarr bookkeeping fields stored on `attrs`. These are treated as
+ * immutable and can be large (notably `_zarr_coords`, which embeds full
+ * coordinate arrays), so `cloneAttrs` shares them by reference instead of
+ * deep-cloning them on every DataArray construction.
+ */
+const HEAVY_ATTR_KEYS = new Set<string>([
+  '_zarr_coords',
+  '_zarr_shape',
+  '_coordAttrs',
+  'codecs',
+]);
+
+/**
+ * Clone an attributes object for a new DataArray.
+ *
+ * User-visible attributes (including nested objects) are deep-cloned so that
+ * mutating one array's attrs can never corrupt another array's metadata. The
+ * known-heavy internal Zarr fields are shared by reference to avoid the cost of
+ * deep-cloning large coordinate arrays on every operation — they are treated as
+ * immutable and are never mutated in place by the library.
+ */
+export function cloneAttrs<T extends Record<string, any>>(attrs: T | undefined): T {
+  if (!attrs) {
+    return {} as T;
+  }
+  const result: Record<string, any> = {};
+  for (const key of Object.keys(attrs)) {
+    const value = attrs[key];
+    result[key] = HEAVY_ATTR_KEYS.has(key) ? value : deepClone(value);
+  }
+  return result as T;
+}
+
+/**
  * Deep clone an object
  */
 export function deepClone<T>(obj: T): T {

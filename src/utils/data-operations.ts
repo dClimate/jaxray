@@ -7,6 +7,22 @@ import { NDArray, DataValue, FlatData } from '../types.js';
 import { deepClone } from '../utils.js';
 
 /**
+ * Coerce a leaf value into the number used by numeric reductions (sum/count/mean).
+ * Numbers pass through (NaN excluded); booleans reduce as 1/0 to match the
+ * element-wise `sum` reducer (`acc + (val as number)`). Everything else
+ * (strings, null, undefined) is skipped by returning `undefined`.
+ */
+function toReducibleNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isNaN(value) ? undefined : value;
+  }
+  if (typeof value === 'boolean') {
+    return value ? 1 : 0;
+  }
+  return undefined;
+}
+
+/**
  * Sum all values in N-dimensional array without flattening - O(n) time, O(1) extra space
  */
 export function sumAll(data: NDArray): number {
@@ -19,8 +35,11 @@ export function sumAll(data: NDArray): number {
       for (let i = current.length - 1; i >= 0; i--) {
         stack.push(current[i]);
       }
-    } else if (typeof current === 'number' && !Number.isNaN(current)) {
-      sum += current;
+    } else {
+      const numeric = toReducibleNumber(current);
+      if (numeric !== undefined) {
+        sum += numeric;
+      }
     }
   }
 
@@ -40,7 +59,7 @@ export function countAll(data: NDArray): number {
       for (let i = current.length - 1; i >= 0; i--) {
         stack.push(current[i]);
       }
-    } else if (typeof current === 'number' && !Number.isNaN(current)) {
+    } else if (toReducibleNumber(current) !== undefined) {
       count++;
     }
   }
@@ -152,8 +171,9 @@ export function meanAlongDimension(data: NDArray, dimIndex: number): NDArray {
     let sum = 0;
     let count = 0;
     for (const value of values) {
-      if (typeof value === 'number' && !Number.isNaN(value)) {
-        sum += value;
+      const numeric = toReducibleNumber(value);
+      if (numeric !== undefined) {
+        sum += numeric;
         count++;
       }
     }

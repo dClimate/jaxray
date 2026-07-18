@@ -19,7 +19,7 @@ import {
   StreamChunk,
   RollingOptions,
 } from './types.js';
-import { getShape, flatten, deepClone } from './utils.js';
+import { getShape, flatten, deepClone, cloneAttrs } from './utils.js';
 import {
   createEagerBlock,
   createTypedBlock,
@@ -88,9 +88,8 @@ export class DataArray {
       if (!options.lazyLoader) throw new Error('lazy DataArray requires lazyLoader');
       const shape = [...options.virtualShape];
       this._shape = shape;
-      // Isolate top-level attr mutations without cloning nested Zarr metadata,
-      // which may contain full coordinate arrays.
-      this._attrs = options.attrs ? { ...options.attrs } : {};
+      // Isolate nested user attrs while sharing heavy Zarr metadata by reference.
+      this._attrs = cloneAttrs(options.attrs);
       this._name = options.name;
       this._dims = options.dims ? [...options.dims] : shape.map((_, i) => `dim_${i}`);
       this._block = createLazyBlock(shape, options.lazyLoader);
@@ -126,8 +125,8 @@ export class DataArray {
       ? createTypedBlock(data.data, data.shape)
       : createEagerBlock(data);
     this._shape = [...shape];
-    // Isolate top-level attr mutations while sharing nested metadata objects.
-    this._attrs = options.attrs ? { ...options.attrs } : {};
+    // Isolate nested user attrs while sharing heavy Zarr metadata by reference.
+    this._attrs = cloneAttrs(options.attrs);
     this._name = options.name;
     // Handle dimensions
     if (options.dims) {

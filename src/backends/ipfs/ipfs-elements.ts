@@ -7,7 +7,7 @@ export type DagCborBlockstore = {
 };
 
 export type UnixfsCat = {
-   cat: (cid: string | CID, options?: { offset?: number; length?: number }) => AsyncIterable<Uint8Array>;
+   cat: (cid: string | CID, options?: { offset?: number; length?: number; suffix?: number }) => AsyncIterable<Uint8Array>;
 };
 
 export interface IPFSELEMENTS_INTERFACE {
@@ -39,8 +39,16 @@ export function createIpfsElements(gatewayUrl = 'http://127.0.0.1:8080') {
   return {
     dagCbor: { components: { blockstore: dagCborBlockstore } },
     unixfs: {
-      cat: async function* (cid: string | CID, options?: { offset?: number; length?: number }): AsyncIterable<Uint8Array> {
-        const data = await gateway.load(cid, options?.offset ?? null, options?.length ?? null);
+      cat: async function* (
+        cid: string | CID,
+        options?: { offset?: number; length?: number; suffix?: number },
+      ): AsyncIterable<Uint8Array> {
+        const data = await gateway.load(
+          cid,
+          options?.offset ?? null,
+          options?.length ?? null,
+          options?.suffix ?? null,
+        );
         yield data;
       },
     },
