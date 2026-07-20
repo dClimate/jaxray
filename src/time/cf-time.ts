@@ -38,16 +38,6 @@ function splitTimeUnits(unitsStr: string): { unit: CFTimeUnit; reference: string
 }
 
 /**
- * Whether a CF time-units string counts in increments finer than a millisecond.
- * A JavaScript Date only carries millisecond precision, so coordinate lookups on
- * such units must go through {@link encodeCFTime} rather than getTime() diffs;
- * otherwise neighbouring sub-millisecond labels collapse onto the same instant.
- */
-export function isSubMillisecondTimeUnit(unitsStr: string): boolean {
-  return splitTimeUnits(unitsStr)?.unit === 'microsecond';
-}
-
-/**
  * Parse CF-compliant time units string
  * Format: "<units> since <reference_date>"
  * Examples:
@@ -464,20 +454,6 @@ function toCalendarComponents(
     },
     timezoneOffsetMinutes
   };
-}
-
-/**
- * Whether a calendar shares proleptic-Gregorian day spacing everywhere, so that
- * JavaScript Date arithmetic reproduces its intervals exactly. Only
- * `proleptic_gregorian` qualifies: the CF-default `standard` calendar switches
- * from Julian to Gregorian at the 1582 cutover (Oct 4 → Oct 15 is one CF day,
- * eleven JS-Date days), and noleap/all_leap/360_day/julian all differ. Every
- * other calendar must be encoded via {@link encodeCFTime} with day-number
- * arithmetic. Absent calendar metadata defaults to `standard` per CF, so it is
- * not treated as proleptic Gregorian.
- */
-export function isProlepticGregorianCalendar(calendar?: string): boolean {
-  return normalizeCalendar(calendar ?? 'standard') === 'proleptic_gregorian';
 }
 
 /**

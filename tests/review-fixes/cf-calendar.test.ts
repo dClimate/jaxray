@@ -257,17 +257,11 @@ describe('literal CF calendar contracts', () => {
       .toBeInstanceOf(Date);
   });
 
-  test('only proleptic_gregorian shares JavaScript Date spacing; standard uses calendar arithmetic', () => {
+  test('standard calendar measures a one-CF-day gap across the 1582 cutover, not eleven JS-Date days', () => {
     // The CF-default `standard` calendar (including absent metadata) switches
     // from Julian to Gregorian at the 1582 cutover, so Oct 4 -> Oct 15 is a
-    // single CF day but eleven JS-Date days. Treating it as Gregorian would
-    // bypass calendar-aware coordinate lookup and mis-measure that gap.
-    expect(cfTime.isProlepticGregorianCalendar('proleptic_gregorian')).toBe(true);
-    expect(cfTime.isProlepticGregorianCalendar('standard')).toBe(false);
-    expect(cfTime.isProlepticGregorianCalendar('gregorian')).toBe(false);
-    expect(cfTime.isProlepticGregorianCalendar('noleap')).toBe(false);
-    expect(cfTime.isProlepticGregorianCalendar(undefined)).toBe(false);
-
+    // single CF day but eleven JS-Date days. Coordinate lookup encodes through
+    // the calendar so it measures the true one-day gap.
     const units = 'days since 1582-10-01';
     const oct4 = requireDecodeCFTime()(3, units, 'standard') as Date;
     const oct15 = requireDecodeCFTime()(4, units, 'standard') as Date;
@@ -464,6 +458,28 @@ describe('Zarr CF calendar coordinate decoding', () => {
     });
 
     expect((await variable.sel({ time: '2000-01-01T00:00:00.000001' })).data).toBe(20);
+    expect((await variable.sel({ time: '2000-01-01T00:00:00.000Z' })).data).toBe(10);
+  });
+
+  test('sub-millisecond precision from fractional values of a coarser unit stays distinct', async () => {
+    // Not a microsecond unit: `seconds since ...` with fractional values [0, 0.0005]
+    // still decodes to labels 500 microseconds apart. Lookup must not collapse them
+    // onto the same millisecond (the case a units-only precision gate missed).
+    const variable = new DataArray([10, 20], {
+      dims: ['time'],
+      coords: { time: ['2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000500'] },
+      attrs: {
+        _coordAttrs: {
+          time: {
+            standard_name: 'time',
+            units: 'seconds since 2000-01-01',
+            calendar: 'proleptic_gregorian'
+          }
+        }
+      }
+    });
+
+    expect((await variable.sel({ time: '2000-01-01T00:00:00.000500' })).data).toBe(20);
     expect((await variable.sel({ time: '2000-01-01T00:00:00.000Z' })).data).toBe(10);
   });
 });
