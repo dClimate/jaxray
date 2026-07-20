@@ -65,6 +65,20 @@ describe('parseCFTimeUnits', () => {
     expect(result?.referenceDate).toBeInstanceOf(Date);
   });
 
+  test('should normalize non-padded and compact numeric timezone offsets', () => {
+    // One-digit hour (grammar accepts it) must be zero-padded, not left as -6:00
+    // which ECMAScript Date rejects.
+    expect(parseCFTimeUnits('hours since 2000-01-01 00:00:00 -6')?.referenceDate.getTime())
+      .toBe(new Date('2000-01-01T06:00:00Z').getTime());
+    expect(parseCFTimeUnits('hours since 2000-01-01T00:00:00+6')?.referenceDate.getTime())
+      .toBe(new Date('1999-12-31T18:00:00Z').getTime());
+    // Compact (no colon) and one-digit-hour-with-minutes forms normalize too.
+    expect(parseCFTimeUnits('hours since 2000-01-01T00:00:00-0630')?.referenceDate.getTime())
+      .toBe(new Date('2000-01-01T06:30:00Z').getTime());
+    expect(parseCFTimeUnits('hours since 2000-01-01T00:00:00+6:30')?.referenceDate.getTime())
+      .toBe(new Date('1999-12-31T17:30:00Z').getTime());
+  });
+
   test('should handle date without time component', () => {
     const result = parseCFTimeUnits('days since 2000-01-01');
     expect(result).not.toBeNull();

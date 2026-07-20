@@ -33,11 +33,11 @@ function narrowBigInt(value: unknown): unknown {
 
 function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | undefined): any[] {
   const normalized = values.map((value) => {
+    // Narrow int64/uint64 coordinate labels through the same precision guard as
+    // data values: coercing a value beyond ±2^53 would silently corrupt the
+    // label (and every selection against it), so those are rejected loudly.
     if (typeof value === "bigint") {
-      const asNumber = Number(value);
-      if (Number.isFinite(asNumber)) {
-        return asNumber;
-      }
+      return bigIntToNumber(value);
     }
     return value;
   });

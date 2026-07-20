@@ -508,6 +508,24 @@ describe('int64/uint64 Zarr storage narrows to numbers without silent corruption
     await expect(dataset.getVariable('data').compute())
       .rejects.toThrow('without loss of precision');
   });
+
+  test('int64 coordinate labels narrow through the same guard', async () => {
+    // Name == dimension makes this a coordinate variable, decoded eagerly at
+    // open() via normalizeCoordinateValues. Safe values narrow to numbers.
+    const safe = makeBigIntStore(new BigInt64Array([1n, 2n, 3n]), [3], ['data'], 'int64');
+    const dataset = await ZarrBackend.open(safe);
+    expect(dataset.coords.data).toEqual([1, 2, 3]);
+  });
+
+  test('an unsafe int64 coordinate value is rejected at open, not silently rounded', async () => {
+    const unsafe = makeBigIntStore(
+      new BigInt64Array([1n, 9007199254740993n]),
+      [2],
+      ['data'],
+      'int64'
+    );
+    await expect(ZarrBackend.open(unsafe)).rejects.toThrow('without loss of precision');
+  });
 });
 
 describe('selectFlatData short-circuits whole-array no-op selections', () => {

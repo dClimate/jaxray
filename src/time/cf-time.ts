@@ -72,9 +72,15 @@ export function parseCFTimeUnits(unitsStr: string): { unit: string; referenceDat
       );
     }
 
-    // ECMAScript Date requires an explicit minute component on numeric offsets.
+    // ECMAScript Date requires a zero-padded ±HH:MM numeric offset. Normalize any
+    // accepted form (+6, +6:30, +630, +0630) to that shape, padding one-digit
+    // hours and supplying :00 minutes when absent.
     if (/[tT]/.test(dateStrUTC)) {
-      dateStrUTC = dateStrUTC.replace(/([+-]\d{1,2})$/, '$1:00');
+      dateStrUTC = dateStrUTC.replace(
+        /([+-])(\d{1,2})(?::?(\d{2}))?$/,
+        (_match, sign: string, hours: string, minutes?: string) =>
+          `${sign}${hours.padStart(2, '0')}:${(minutes ?? '00').padStart(2, '0')}`
+      );
     }
 
     // Detect existing timezone designator (Z or ±hh[:mm])
