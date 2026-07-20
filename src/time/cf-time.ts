@@ -118,6 +118,9 @@ interface DateTimeComponents {
   minute: number;
   second: number;
   millisecond: number;
+  /** Sub-millisecond remainder in whole microseconds (0-999). Optional; only
+   * populated where microsecond-resolution coordinates must stay distinct. */
+  microsecond?: number;
 }
 
 interface ParsedCalendarUnits {
@@ -153,30 +156,35 @@ function normalizeCalendar(calendar: string): CFCalendar | null {
   }
 }
 
+/** Shared calendar/label date pattern: `YYYY-MM-DD[ (T| )HH[:MM[:SS[.frac]]]][ ][Z|±hh[:mm]]`. */
+const CALENDAR_DATE_RE =
+  /^([+-]?\d+)-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2})(?:\.(\d+))?)?)?\s*(Z|[+-]\d{1,2}(?::?\d{2})?)?$/i;
+
+/** Parse a trailing timezone designator to signed minutes; null if malformed. */
+function parseTimezoneOffsetMinutes(timezone: string | undefined): number | null {
+  if (!timezone || timezone.toUpperCase() === 'Z') return 0;
+  const sign = timezone[0] === '-' ? -1 : 1;
+  const digits = timezone.slice(1).split(':');
+  const compact = timezone.slice(1).replace(':', '');
+  const hasColon = digits.length === 2;
+  const timezoneHours = Number(hasColon ? digits[0] : compact.length <= 2 ? compact : compact.slice(0, -2));
+  const timezoneMinutes = Number(hasColon ? digits[1] : compact.length <= 2 ? 0 : compact.slice(-2));
+  if (timezoneHours > 23 || timezoneMinutes > 59) return null;
+  return sign * (timezoneHours * 60 + timezoneMinutes);
+}
+
 function parseCalendarUnits(unitsStr: string): ParsedCalendarUnits | null {
   const parsedUnits = splitTimeUnits(unitsStr);
   if (!parsedUnits) return null;
 
-  const dateMatch = parsedUnits.reference.match(
-    /^([+-]?\d+)-(\d{1,2})-(\d{1,2})(?:[T\s]+(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2})(?:\.(\d+))?)?)?\s*(Z|[+-]\d{1,2}(?::?\d{2})?)?$/i
-  );
+  const dateMatch = parsedUnits.reference.match(CALENDAR_DATE_RE);
   if (!dateMatch) return null;
 
   const fraction = dateMatch[7] ?? '';
-  const timezone = dateMatch[8];
   const roundedMilliseconds = Math.round(Number(`0.${fraction || '0'}`) * 1000);
   const carriedSeconds = Math.floor(roundedMilliseconds / 1000);
-  let timezoneOffsetMinutes = 0;
-  if (timezone && timezone.toUpperCase() !== 'Z') {
-    const sign = timezone[0] === '-' ? -1 : 1;
-    const digits = timezone.slice(1).split(':');
-    const compact = timezone.slice(1).replace(':', '');
-    const hasColon = digits.length === 2;
-    const timezoneHours = Number(hasColon ? digits[0] : compact.length <= 2 ? compact : compact.slice(0, -2));
-    const timezoneMinutes = Number(hasColon ? digits[1] : compact.length <= 2 ? 0 : compact.slice(-2));
-    if (timezoneHours > 23 || timezoneMinutes > 59) return null;
-    timezoneOffsetMinutes = sign * (timezoneHours * 60 + timezoneMinutes);
-  }
+  const timezoneOffsetMinutes = parseTimezoneOffsetMinutes(dateMatch[8]);
+  if (timezoneOffsetMinutes === null) return null;
 
   return {
     unit: parsedUnits.unit,
@@ -353,10 +361,102 @@ function formatCalendarDate(components: DateTimeComponents): string {
   const hour = String(components.hour).padStart(2, '0');
   const minute = String(components.minute).padStart(2, '0');
   const second = String(components.second).padStart(2, '0');
-  const fraction = components.millisecond
-    ? `.${String(components.millisecond * 1000).padStart(6, '0')}`
+  const totalMicroseconds = components.millisecond * 1000 + (components.microsecond ?? 0);
+  const fraction = totalMicroseconds
+    ? `.${String(totalMicroseconds).padStart(6, '0')}`
     : '';
   return `${year}-${month}-${day}T${hour}:${minute}:${second}${fraction}`;
+}
+
+/**
+ * Milliseconds per elapsed unit. Returns null for units that are not fixed
+ * durations in the given calendar (calendar months/years, except 360_day
+ * months which are always 30 days).
+ */
+function unitToMilliseconds(unit: CFTimeUnit, calendar: CFCalendar): number | null {
+  switch (unit) {
+    case 'microsecond':
+      return 0.001;
+    case 'millisecond':
+      return 1;
+    case 'second':
+      return 1000;
+    case 'minute':
+      return 60 * 1000;
+    case 'hour':
+      return 60 * 60 * 1000;
+    case 'day':
+      return MILLISECONDS_PER_DAY;
+    case 'week':
+      return 7 * MILLISECONDS_PER_DAY;
+    case 'month':
+      return calendar === '360_day' ? 30 * MILLISECONDS_PER_DAY : null;
+    case 'year':
+    default:
+      return null;
+  }
+}
+
+/**
+ * Extract UTC calendar components (and any explicit timezone offset) from a
+ * decoded time label. Strings are read literally against the calendar rather
+ * than through JavaScript's proleptic-Gregorian Date parser, so non-Gregorian
+ * labels such as a `noleap` "2001-02-29" survive round-tripping.
+ */
+function toCalendarComponents(
+  value: Date | string
+): { components: DateTimeComponents; timezoneOffsetMinutes: number } | null {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    return {
+      components: {
+        year: value.getUTCFullYear(),
+        month: value.getUTCMonth() + 1,
+        day: value.getUTCDate(),
+        hour: value.getUTCHours(),
+        minute: value.getUTCMinutes(),
+        second: value.getUTCSeconds(),
+        millisecond: value.getUTCMilliseconds(),
+        microsecond: 0
+      },
+      timezoneOffsetMinutes: 0
+    };
+  }
+
+  const match = value.trim().match(CALENDAR_DATE_RE);
+  if (!match) return null;
+
+  const timezoneOffsetMinutes = parseTimezoneOffsetMinutes(match[8]);
+  if (timezoneOffsetMinutes === null) return null;
+
+  const fraction = match[7] ?? '';
+  const totalMicroseconds = Math.round(Number(`0.${fraction || '0'}`) * 1e6);
+  const millisecond = Math.floor(totalMicroseconds / 1000);
+
+  return {
+    components: {
+      year: Number(match[1]),
+      month: Number(match[2]),
+      day: Number(match[3]),
+      hour: Number(match[4] ?? 0),
+      minute: Number(match[5] ?? 0),
+      second: Number(match[6] ?? 0),
+      millisecond,
+      microsecond: totalMicroseconds - millisecond * 1000
+    },
+    timezoneOffsetMinutes
+  };
+}
+
+/**
+ * Whether a calendar shares proleptic-Gregorian day spacing over the ranges we
+ * support, so JavaScript Date arithmetic reproduces its intervals. Other
+ * calendars (noleap, all_leap, 360_day, julian) need day-number arithmetic and
+ * should be encoded via {@link encodeCFTime}.
+ */
+export function isGregorianCalendar(calendar?: string): boolean {
+  const normalized = normalizeCalendar(calendar ?? 'standard');
+  return normalized === 'standard' || normalized === 'proleptic_gregorian';
 }
 
 /**
@@ -375,44 +475,30 @@ export function decodeCFTime(
     return null;
   }
 
-  let unitMilliseconds: number;
-  switch (parsed.unit) {
-    case 'microsecond':
-      unitMilliseconds = 0.001;
-      break;
-    case 'millisecond':
-      unitMilliseconds = 1;
-      break;
-    case 'second':
-      unitMilliseconds = 1000;
-      break;
-    case 'minute':
-      unitMilliseconds = 60 * 1000;
-      break;
-    case 'hour':
-      unitMilliseconds = 60 * 60 * 1000;
-      break;
-    case 'day':
-      unitMilliseconds = MILLISECONDS_PER_DAY;
-      break;
-    case 'week':
-      unitMilliseconds = 7 * MILLISECONDS_PER_DAY;
-      break;
-    case 'month':
-      if (normalizedCalendar !== '360_day') return null;
-      unitMilliseconds = 30 * MILLISECONDS_PER_DAY;
-      break;
-    case 'year':
-    default:
-      return null;
-  }
+  const unitMilliseconds = unitToMilliseconds(parsed.unit, normalizedCalendar);
+  if (unitMilliseconds === null) return null;
 
   const referenceTime = parsed.reference.hour * 60 * 60 * 1000
     + parsed.reference.minute * 60 * 1000
     + (parsed.reference.second + parsed.fractionCarrySeconds) * 1000
     + parsed.reference.millisecond
     - parsed.timezoneOffsetMinutes * 60 * 1000;
-  const elapsedMilliseconds = referenceTime + Math.round(value * unitMilliseconds);
+
+  // Resolve the elapsed offset to whole milliseconds plus a sub-millisecond
+  // remainder. A JavaScript Date only carries millisecond precision, so a
+  // microsecond coordinate that does not land on a whole millisecond is
+  // rendered as a full-precision string instead of being rounded into a
+  // duplicate of its neighbour.
+  let elapsedMilliseconds: number;
+  let microsecondRemainder = 0;
+  if (parsed.unit === 'microsecond') {
+    const elapsedMicroseconds = Math.round(referenceTime * 1000 + value);
+    elapsedMilliseconds = Math.floor(elapsedMicroseconds / 1000);
+    microsecondRemainder = elapsedMicroseconds - elapsedMilliseconds * 1000;
+  } else {
+    elapsedMilliseconds = referenceTime + Math.round(value * unitMilliseconds);
+  }
+
   const dayOffset = Math.floor(elapsedMilliseconds / MILLISECONDS_PER_DAY);
   let timeOfDay = elapsedMilliseconds - dayOffset * MILLISECONDS_PER_DAY;
   const dayNumber = toDayNumber(parsed.reference, normalizedCalendar) + dayOffset;
@@ -427,10 +513,62 @@ export function decodeCFTime(
     hour,
     minute,
     second,
-    millisecond: timeOfDay - second * 1000
+    millisecond: timeOfDay - second * 1000,
+    microsecond: microsecondRemainder
   };
 
+  // A non-zero microsecond remainder cannot be represented by a Date; keep the
+  // full-precision string so neighbouring coordinates stay distinct.
+  if (microsecondRemainder !== 0) {
+    return formatCalendarDate(components);
+  }
   return asGregorianDate(components) ?? formatCalendarDate(components);
+}
+
+/**
+ * Encode a decoded time label back to its numeric CF value using arithmetic
+ * native to the given calendar — the inverse of {@link decodeCFTime}. Used for
+ * coordinate lookups so that nearest/fill selection measures gaps in calendar
+ * days rather than proleptic-Gregorian days. Returns null when the label cannot
+ * be represented in the calendar or the units are not a fixed duration.
+ */
+export function encodeCFTime(
+  value: Date | string,
+  unitsStr: string,
+  calendar: string = 'standard'
+): number | null {
+  const normalizedCalendar = normalizeCalendar(calendar);
+  const parsed = parseCalendarUnits(unitsStr);
+  if (!normalizedCalendar || !parsed || !isValidDateTime(parsed.reference, normalizedCalendar)) {
+    return null;
+  }
+
+  const unitMilliseconds = unitToMilliseconds(parsed.unit, normalizedCalendar);
+  if (unitMilliseconds === null) return null;
+
+  const parsedValue = toCalendarComponents(value);
+  if (!parsedValue || !isValidDateTime(parsedValue.components, normalizedCalendar)) {
+    return null;
+  }
+  const { components, timezoneOffsetMinutes } = parsedValue;
+
+  const referenceTime = parsed.reference.hour * 60 * 60 * 1000
+    + parsed.reference.minute * 60 * 1000
+    + (parsed.reference.second + parsed.fractionCarrySeconds) * 1000
+    + parsed.reference.millisecond
+    - parsed.timezoneOffsetMinutes * 60 * 1000;
+
+  const valueTime = components.hour * 60 * 60 * 1000
+    + components.minute * 60 * 1000
+    + components.second * 1000
+    + components.millisecond
+    + (components.microsecond ?? 0) / 1000
+    - timezoneOffsetMinutes * 60 * 1000;
+
+  const dayOffset = toDayNumber(components, normalizedCalendar)
+    - toDayNumber(parsed.reference, normalizedCalendar);
+  const elapsedMilliseconds = dayOffset * MILLISECONDS_PER_DAY + valueTime - referenceTime;
+  return elapsedMilliseconds / unitMilliseconds;
 }
 
 /**

@@ -5,6 +5,18 @@ import { DataArray } from "../DataArray.js";
 import { DataValue, FlatDataStorage } from "../types.js";
 import { decodeCFTime, isTimeCoordinate } from "../time/cf-time.js";
 
+// int64/uint64 values arrive from zarrita as bigint (scalars) or BigInt64Array/
+// BigUint64Array (arrays). DataValue cannot hold bigint, so narrow a scalar to a
+// number the same way coordinate values are narrowed; a length-1 bigint typed
+// array (some zarr scalar reads) is unwrapped first.
+function narrowBigInt(value: unknown): unknown {
+  if (typeof value === "bigint") return Number(value);
+  if ((value instanceof BigInt64Array || value instanceof BigUint64Array) && value.length === 1) {
+    return Number(value[0]);
+  }
+  return value;
+}
+
 function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | undefined): any[] {
   const normalized = values.map((value) => {
     if (typeof value === "bigint") {
@@ -340,15 +352,22 @@ export class ZarrBackend {
           return arr.shape[i];
         }).filter(s => s !== undefined) as number[];
 
+        const rawResult = result.data !== undefined ? result.data : result;
+
         // Handle scalar result (all dimensions were single indices)
         if (resultShape.length === 0) {
-          const scalarValue = result.data !== undefined ? result.data : result;
-          return scalarValue as unknown as DataValue;
+          return narrowBigInt(rawResult) as unknown as DataValue;
         }
 
-        // Preserve zarrita's decoded TypedArray and carry its logical shape.
-        // Nesting is deferred until DataArray.values/materialize is requested.
-        const flatData = (result.data !== undefined ? result.data : result) as FlatDataStorage;
+        // int64/uint64 arrays arrive as BigInt64Array/BigUint64Array, which the
+        // flat-data path (FlatDataStorage / isFlatData) does not accept — passing
+        // one through makes DataArray treat the payload as scalar and throw a
+        // dimension mismatch. Narrow them to a number[] (matching how int64
+        // coordinates are handled) so every dtype flows through the flat path.
+        const flatData: FlatDataStorage =
+          rawResult instanceof BigInt64Array || rawResult instanceof BigUint64Array
+            ? Array.from(rawResult, (v) => Number(v))
+            : (rawResult as FlatDataStorage);
         return { data: flatData, shape: resultShape };
       };
 

@@ -294,7 +294,7 @@ describe('Zarr CF calendar coordinate decoding', () => {
     ]);
   });
 
-  test('360_day exact selection preserves cftime labels and nearest fails loudly', async () => {
+  test('360_day exact and nearest selection resolve via calendar arithmetic', async () => {
     const store = createTimeSeriesStore(
       '360_day',
       'days since 2000-01-01',
@@ -311,9 +311,16 @@ describe('Zarr CF calendar coordinate decoding', () => {
     ]);
     expect((await variable.sel({ time: '2000-03-01T00:00:00' })).data).toBe(600);
     expect((await variable.sel({ time: dataset.coords.time[1] })).data).toBe(590);
-    await expect(
-      variable.sel({ time: '2000-02-29T12:00:00' }, { method: 'nearest' })
-    ).rejects.toThrow('Nearest neighbor lookup requires numeric or Date coordinates');
+    // The middle label "2000-02-30" is a valid 360_day date with no Gregorian
+    // representation. Encoding every label through calendar arithmetic keeps the
+    // coordinate numeric and evenly spaced, so nearest lookup measures gaps in
+    // 360_day days and resolves to the correct cell instead of failing.
+    expect(
+      (await variable.sel({ time: '2000-02-29T06:00:00' }, { method: 'nearest' })).data
+    ).toBe(580);
+    expect(
+      (await variable.sel({ time: '2000-02-30T18:00:00' }, { method: 'nearest' })).data
+    ).toBe(600);
   });
 
   test('all_leap exact selection does not overflow its 1850 leap day', async () => {
