@@ -131,6 +131,7 @@ interface ParsedCalendarUnits {
 }
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+const MICROSECONDS_PER_DAY = MILLISECONDS_PER_DAY * 1000;
 const GREGORIAN_MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const STANDARD_CUTOVER_DAY = 2299161; // 1582-10-15 Gregorian, after 1582-10-04 Julian
 
@@ -369,28 +370,29 @@ function formatCalendarDate(components: DateTimeComponents): string {
 }
 
 /**
- * Milliseconds per elapsed unit. Returns null for units that are not fixed
- * durations in the given calendar (calendar months/years, except 360_day
- * months which are always 30 days).
+ * Microseconds per elapsed unit. Whole integers so that offset arithmetic can
+ * stay exact (no fractional-millisecond rounding). Returns null for units that
+ * are not fixed durations in the given calendar (calendar months/years, except
+ * 360_day months which are always 30 days).
  */
-function unitToMilliseconds(unit: CFTimeUnit, calendar: CFCalendar): number | null {
+function unitToMicroseconds(unit: CFTimeUnit, calendar: CFCalendar): number | null {
   switch (unit) {
     case 'microsecond':
-      return 0.001;
-    case 'millisecond':
       return 1;
-    case 'second':
+    case 'millisecond':
       return 1000;
+    case 'second':
+      return 1_000_000;
     case 'minute':
-      return 60 * 1000;
+      return 60 * 1_000_000;
     case 'hour':
-      return 60 * 60 * 1000;
+      return 60 * 60 * 1_000_000;
     case 'day':
-      return MILLISECONDS_PER_DAY;
+      return MICROSECONDS_PER_DAY;
     case 'week':
-      return 7 * MILLISECONDS_PER_DAY;
+      return 7 * MICROSECONDS_PER_DAY;
     case 'month':
-      return calendar === '360_day' ? 30 * MILLISECONDS_PER_DAY : null;
+      return calendar === '360_day' ? 30 * MICROSECONDS_PER_DAY : null;
     case 'year':
     default:
       return null;
@@ -449,14 +451,31 @@ function toCalendarComponents(
 }
 
 /**
- * Whether a calendar shares proleptic-Gregorian day spacing over the ranges we
- * support, so JavaScript Date arithmetic reproduces its intervals. Other
- * calendars (noleap, all_leap, 360_day, julian) need day-number arithmetic and
- * should be encoded via {@link encodeCFTime}.
+ * Whether a calendar shares proleptic-Gregorian day spacing everywhere, so that
+ * JavaScript Date arithmetic reproduces its intervals exactly. Only
+ * `proleptic_gregorian` qualifies: the CF-default `standard` calendar switches
+ * from Julian to Gregorian at the 1582 cutover (Oct 4 → Oct 15 is one CF day,
+ * eleven JS-Date days), and noleap/all_leap/360_day/julian all differ. Every
+ * other calendar must be encoded via {@link encodeCFTime} with day-number
+ * arithmetic. Absent calendar metadata defaults to `standard` per CF, so it is
+ * not treated as proleptic Gregorian.
  */
-export function isGregorianCalendar(calendar?: string): boolean {
-  const normalized = normalizeCalendar(calendar ?? 'standard');
-  return normalized === 'standard' || normalized === 'proleptic_gregorian';
+export function isProlepticGregorianCalendar(calendar?: string): boolean {
+  return normalizeCalendar(calendar ?? 'standard') === 'proleptic_gregorian';
+}
+
+/**
+ * Reference time-of-day offset in whole microseconds (UTC), folding in the
+ * parsed timezone offset. The reference itself has at most millisecond
+ * precision, so this is always an exact integer.
+ */
+function referenceMicrosecondsOfDay(parsed: ParsedCalendarUnits): number {
+  const milliseconds = parsed.reference.hour * 60 * 60 * 1000
+    + parsed.reference.minute * 60 * 1000
+    + (parsed.reference.second + parsed.fractionCarrySeconds) * 1000
+    + parsed.reference.millisecond
+    - parsed.timezoneOffsetMinutes * 60 * 1000;
+  return milliseconds * 1000;
 }
 
 /**
@@ -475,29 +494,20 @@ export function decodeCFTime(
     return null;
   }
 
-  const unitMilliseconds = unitToMilliseconds(parsed.unit, normalizedCalendar);
-  if (unitMilliseconds === null) return null;
+  const unitMicroseconds = unitToMicroseconds(parsed.unit, normalizedCalendar);
+  if (unitMicroseconds === null) return null;
 
-  const referenceTime = parsed.reference.hour * 60 * 60 * 1000
-    + parsed.reference.minute * 60 * 1000
-    + (parsed.reference.second + parsed.fractionCarrySeconds) * 1000
-    + parsed.reference.millisecond
-    - parsed.timezoneOffsetMinutes * 60 * 1000;
+  const referenceMicroseconds = referenceMicrosecondsOfDay(parsed);
 
-  // Resolve the elapsed offset to whole milliseconds plus a sub-millisecond
-  // remainder. A JavaScript Date only carries millisecond precision, so a
-  // microsecond coordinate that does not land on a whole millisecond is
-  // rendered as a full-precision string instead of being rounded into a
-  // duplicate of its neighbour.
-  let elapsedMilliseconds: number;
-  let microsecondRemainder = 0;
-  if (parsed.unit === 'microsecond') {
-    const elapsedMicroseconds = Math.round(referenceTime * 1000 + value);
-    elapsedMilliseconds = Math.floor(elapsedMicroseconds / 1000);
-    microsecondRemainder = elapsedMicroseconds - elapsedMilliseconds * 1000;
-  } else {
-    elapsedMilliseconds = referenceTime + Math.round(value * unitMilliseconds);
-  }
+  // Resolve the elapsed offset in whole microseconds, then split into whole
+  // milliseconds plus a sub-millisecond remainder. A JavaScript Date only
+  // carries millisecond precision, so any coordinate that does not land on a
+  // whole millisecond — a sub-ms microsecond value, but also a fractional
+  // second/minute/etc. — is rendered as a full-precision string rather than
+  // being rounded into a duplicate of its neighbour.
+  const elapsedMicroseconds = Math.round(referenceMicroseconds + value * unitMicroseconds);
+  const elapsedMilliseconds = Math.floor(elapsedMicroseconds / 1000);
+  const microsecondRemainder = elapsedMicroseconds - elapsedMilliseconds * 1000;
 
   const dayOffset = Math.floor(elapsedMilliseconds / MILLISECONDS_PER_DAY);
   let timeOfDay = elapsedMilliseconds - dayOffset * MILLISECONDS_PER_DAY;
@@ -543,8 +553,8 @@ export function encodeCFTime(
     return null;
   }
 
-  const unitMilliseconds = unitToMilliseconds(parsed.unit, normalizedCalendar);
-  if (unitMilliseconds === null) return null;
+  const unitMicroseconds = unitToMicroseconds(parsed.unit, normalizedCalendar);
+  if (unitMicroseconds === null) return null;
 
   const parsedValue = toCalendarComponents(value);
   if (!parsedValue || !isValidDateTime(parsedValue.components, normalizedCalendar)) {
@@ -552,23 +562,19 @@ export function encodeCFTime(
   }
   const { components, timezoneOffsetMinutes } = parsedValue;
 
-  const referenceTime = parsed.reference.hour * 60 * 60 * 1000
-    + parsed.reference.minute * 60 * 1000
-    + (parsed.reference.second + parsed.fractionCarrySeconds) * 1000
-    + parsed.reference.millisecond
-    - parsed.timezoneOffsetMinutes * 60 * 1000;
+  const referenceMicroseconds = referenceMicrosecondsOfDay(parsed);
 
-  const valueTime = components.hour * 60 * 60 * 1000
+  const valueMicroseconds = (components.hour * 60 * 60 * 1000
     + components.minute * 60 * 1000
     + components.second * 1000
     + components.millisecond
-    + (components.microsecond ?? 0) / 1000
-    - timezoneOffsetMinutes * 60 * 1000;
+    - timezoneOffsetMinutes * 60 * 1000) * 1000
+    + (components.microsecond ?? 0);
 
   const dayOffset = toDayNumber(components, normalizedCalendar)
     - toDayNumber(parsed.reference, normalizedCalendar);
-  const elapsedMilliseconds = dayOffset * MILLISECONDS_PER_DAY + valueTime - referenceTime;
-  return elapsedMilliseconds / unitMilliseconds;
+  const elapsedMicroseconds = dayOffset * MICROSECONDS_PER_DAY + valueMicroseconds - referenceMicroseconds;
+  return elapsedMicroseconds / unitMicroseconds;
 }
 
 /**

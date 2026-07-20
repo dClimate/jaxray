@@ -439,5 +439,73 @@ describe('TypedArray-backed flat storage contract', () => {
   });
 });
 
-// BigInt64Array/BigUint64Array are intentionally exempt from this contract:
-// DataValue currently excludes bigint and numeric reductions operate on number.
+// BigInt64Array/BigUint64Array are exempt from the TypedArray-preservation
+// contract above: DataValue excludes bigint and numeric reductions operate on
+// number. They must still flow through the flat path (narrowed to numbers)
+// rather than being mistaken for scalar data, and must never silently lose
+// precision on values beyond ±(2^53 - 1).
+function makeBigIntStore(
+  values: BigInt64Array | BigUint64Array,
+  shape: number[],
+  dims: string[],
+  dataType: 'int64' | 'uint64'
+): MemoryZarrStore {
+  const store = new MemoryZarrStore({
+    'zarr.json': { node_type: 'group', attributes: {} },
+    'data/zarr.json': {
+      node_type: 'array',
+      shape,
+      data_type: dataType,
+      dimension_names: dims
+    }
+  });
+  const chunkKey = `data/c/${shape.map(() => 0).join('/')}`;
+  store.set(chunkKey, new Uint8Array(values.buffer.slice(0)));
+  return store;
+}
+
+describe('int64/uint64 Zarr storage narrows to numbers without silent corruption', () => {
+  test('safe int64 values flow through the flat path as numbers', async () => {
+    const store = makeBigIntStore(
+      new BigInt64Array([-5n, 0n, 42n, 9007199254740991n]),
+      [4],
+      ['idx'],
+      'int64'
+    );
+    const dataset = await ZarrBackend.open(store);
+    const computed = await dataset.getVariable('data').compute();
+
+    // Reshaped as a normal numeric array, not treated as scalar (which would
+    // throw a dimension-count mismatch before this fix).
+    expect(computed.shape).toEqual([4]);
+    expect(computed.values).toEqual([-5, 0, 42, 9007199254740991]);
+  });
+
+  test('uint64 values within the safe range narrow to numbers', async () => {
+    const store = makeBigIntStore(
+      new BigUint64Array([0n, 1n, 9007199254740991n]),
+      [3],
+      ['idx'],
+      'uint64'
+    );
+    const dataset = await ZarrBackend.open(store);
+    const computed = await dataset.getVariable('data').compute();
+
+    expect(computed.values).toEqual([0, 1, 9007199254740991]);
+  });
+
+  test('an int64 value beyond 2^53 is rejected rather than silently truncated', async () => {
+    // 9007199254740993 is not representable as a JS number; Number() would round
+    // it to 9007199254740992. The read must fail loudly instead.
+    const store = makeBigIntStore(
+      new BigInt64Array([1n, 9007199254740993n]),
+      [2],
+      ['idx'],
+      'int64'
+    );
+    const dataset = await ZarrBackend.open(store);
+
+    await expect(dataset.getVariable('data').compute())
+      .rejects.toThrow('without loss of precision');
+  });
+});

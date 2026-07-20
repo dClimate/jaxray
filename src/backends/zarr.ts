@@ -5,14 +5,28 @@ import { DataArray } from "../DataArray.js";
 import { DataValue, FlatDataStorage } from "../types.js";
 import { decodeCFTime, isTimeCoordinate } from "../time/cf-time.js";
 
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
+
 // int64/uint64 values arrive from zarrita as bigint (scalars) or BigInt64Array/
-// BigUint64Array (arrays). DataValue cannot hold bigint, so narrow a scalar to a
-// number the same way coordinate values are narrowed; a length-1 bigint typed
-// array (some zarr scalar reads) is unwrapped first.
+// BigUint64Array (arrays). DataValue cannot hold a bigint, so each value is
+// narrowed to a number — but only when it is exactly representable. Coercing a
+// value beyond ±2^53 would silently corrupt it (e.g. 9007199254740993n would
+// read back as 9007199254740992), so those are rejected loudly instead.
+function bigIntToNumber(value: bigint): number {
+  if (value > MAX_SAFE_BIGINT || value < MIN_SAFE_BIGINT) {
+    throw new Error(
+      `Cannot read 64-bit integer ${value} as a JavaScript number without loss of precision ` +
+        `(magnitude exceeds Number.MAX_SAFE_INTEGER, 2^53 - 1).`
+    );
+  }
+  return Number(value);
+}
+
 function narrowBigInt(value: unknown): unknown {
-  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "bigint") return bigIntToNumber(value);
   if ((value instanceof BigInt64Array || value instanceof BigUint64Array) && value.length === 1) {
-    return Number(value[0]);
+    return bigIntToNumber(value[0]);
   }
   return value;
 }
@@ -362,11 +376,11 @@ export class ZarrBackend {
         // int64/uint64 arrays arrive as BigInt64Array/BigUint64Array, which the
         // flat-data path (FlatDataStorage / isFlatData) does not accept — passing
         // one through makes DataArray treat the payload as scalar and throw a
-        // dimension mismatch. Narrow them to a number[] (matching how int64
-        // coordinates are handled) so every dtype flows through the flat path.
+        // dimension mismatch. Narrow them to a number[] (rejecting any value that
+        // cannot be represented exactly) so every dtype flows through the flat path.
         const flatData: FlatDataStorage =
           rawResult instanceof BigInt64Array || rawResult instanceof BigUint64Array
-            ? Array.from(rawResult, (v) => Number(v))
+            ? Array.from(rawResult, bigIntToNumber)
             : (rawResult as FlatDataStorage);
         return { data: flatData, shape: resultShape };
       };

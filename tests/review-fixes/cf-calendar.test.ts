@@ -250,6 +250,45 @@ describe('literal CF calendar contracts', () => {
       .toBeInstanceOf(Date);
   });
 
+  test('only proleptic_gregorian shares JavaScript Date spacing; standard uses calendar arithmetic', () => {
+    // The CF-default `standard` calendar (including absent metadata) switches
+    // from Julian to Gregorian at the 1582 cutover, so Oct 4 -> Oct 15 is a
+    // single CF day but eleven JS-Date days. Treating it as Gregorian would
+    // bypass calendar-aware coordinate lookup and mis-measure that gap.
+    expect(cfTime.isProlepticGregorianCalendar('proleptic_gregorian')).toBe(true);
+    expect(cfTime.isProlepticGregorianCalendar('standard')).toBe(false);
+    expect(cfTime.isProlepticGregorianCalendar('gregorian')).toBe(false);
+    expect(cfTime.isProlepticGregorianCalendar('noleap')).toBe(false);
+    expect(cfTime.isProlepticGregorianCalendar(undefined)).toBe(false);
+
+    const units = 'days since 1582-10-01';
+    const oct4 = requireDecodeCFTime()(3, units, 'standard') as Date;
+    const oct15 = requireDecodeCFTime()(4, units, 'standard') as Date;
+    expect(oct4.toISOString()).toBe('1582-10-04T00:00:00.000Z');
+    expect(oct15.toISOString()).toBe('1582-10-15T00:00:00.000Z');
+    // Re-encoding through the calendar measures the one-CF-day gap, not eleven.
+    expect(
+      cfTime.encodeCFTime(oct15, units, 'standard')! - cfTime.encodeCFTime(oct4, units, 'standard')!
+    ).toBe(1);
+    expect(cfTime.encodeCFTime('1582-10-15', units, 'standard')).toBe(4);
+  });
+
+  test('decodeCFTime preserves sub-millisecond precision as a string for any fractional unit', () => {
+    const decodeCFTime = requireDecodeCFTime();
+
+    // A fractional second below one millisecond must not round up into a
+    // duplicate of its neighbour; it is kept as a full-precision string.
+    expect(decodeCFTime(0.0005, 'seconds since 2000-01-01')).toBe('2000-01-01T00:00:00.000500');
+    expect(decodeCFTime(0.0015, 'seconds since 2000-01-01')).toBe('2000-01-01T00:00:00.001500');
+    // A whole-millisecond fractional value still decodes to a Date.
+    expect((decodeCFTime(0.5, 'seconds since 2000-01-01') as Date).toISOString())
+      .toBe('2000-01-01T00:00:00.500Z');
+    // Microsecond units stay distinct at one-microsecond resolution.
+    expect(decodeCFTime(0, 'microseconds since 2000-01-01')).toBeInstanceOf(Date);
+    expect(decodeCFTime(1, 'microseconds since 2000-01-01')).toBe('2000-01-01T00:00:00.000001');
+    expect(decodeCFTime(1500, 'microseconds since 2000-01-01')).toBe('2000-01-01T00:00:00.001500');
+  });
+
   test('formatCoordinateValue preserves calendar-correct display strings', () => {
     expect.soft(cfTime.formatCoordinateValue(60, {
       units: 'days since 2000-01-01',
@@ -359,6 +398,32 @@ describe('Zarr CF calendar coordinate decoding', () => {
 
     await expect(variable.sel({ time: new Date('2000-01-31T00:00:00Z') }))
       .rejects.toThrow('not found');
+  });
+
+  test('nearest selection on a standard-calendar coordinate measures CF days across the 1582 cutover', async () => {
+    // 1582-10-04 and 1582-10-15 are consecutive days in the standard calendar
+    // (the ten skipped Julian days never existed), so they are one CF day apart
+    // even though JavaScript's proleptic-Gregorian Date sees eleven.
+    const variable = new DataArray([10, 20], {
+      dims: ['time'],
+      coords: { time: ['1582-10-04T00:00:00.000Z', '1582-10-15T00:00:00.000Z'] },
+      attrs: {
+        _coordAttrs: {
+          time: {
+            standard_name: 'time',
+            units: 'days since 1582-10-01',
+            calendar: 'standard'
+          }
+        }
+      }
+    });
+
+    // 18:00 into the first CF day is nearer the second cell in CF-day space
+    // (0.75 of one day). Under the old JS-Date fast path the eleven-day gap put
+    // it far closer to the first cell — the exact mis-selection being fixed.
+    expect((await variable.sel({ time: '1582-10-04T18:00:00' }, { method: 'nearest' })).data).toBe(20);
+    expect((await variable.sel({ time: '1582-10-04T06:00:00' }, { method: 'nearest' })).data).toBe(10);
+    expect((await variable.sel({ time: '1582-10-15T00:00:00' })).data).toBe(20);
   });
 });
 
