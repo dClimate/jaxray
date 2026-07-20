@@ -21,6 +21,23 @@ export function applyRolling(
     }
 
     if (axis === dimIndex) {
+      if (Array.isArray(input[0])) {
+        const buildRolledLane = (slices: any[]): ((index: number) => any) => {
+          if (!Array.isArray(slices[0])) {
+            const rolled = rolling1D(slices as DataValue[], window, options, reducer);
+            return index => rolled[index];
+          }
+
+          const innerLanes = slices[0].map((_: any, innerIndex: number) =>
+            buildRolledLane(slices.map(slice => slice[innerIndex]))
+          );
+          return index => innerLanes.map((lane: (index: number) => any) => lane(index));
+        };
+
+        const rolledLane = buildRolledLane(input);
+        return input.map((_: any, index: number) => rolledLane(index));
+      }
+
       return rolling1D(input as DataValue[], window, options, reducer);
     }
 
@@ -32,7 +49,7 @@ export function applyRolling(
 
 /**
  * Apply rolling window operation to a 1D array
- * Optimized with sliding window algorithm for non-centered windows
+ * Optimized with sliding window algorithms
  */
 export function rolling1D(
   values: DataValue[],
@@ -79,33 +96,36 @@ export function rolling1D(
     return result;
   }
 
-  // Fallback to original algorithm for centered windows
-  // (more complex due to asymmetric window boundaries)
+  // Use the same O(n) sliding window approach with centered window bounds.
+  let sum = 0;
+  let count = 0;
+  let previousStart = 0;
+  let previousEnd = -1;
+  const half = Math.floor((normalizedWindow - 1) / 2);
+
   for (let i = 0; i < len; i++) {
-    let start: number;
-    let end: number;
+    const unclampedStart = i - half;
+    const start = Math.max(unclampedStart, 0);
+    const end = Math.min(unclampedStart + normalizedWindow - 1, len - 1);
 
-    const half = Math.floor((normalizedWindow - 1) / 2);
-    start = i - half;
-    end = start + normalizedWindow - 1;
-
-    start = Math.max(start, 0);
-    end = Math.min(end, len - 1);
-
-    if (end < start) {
-      continue;
+    for (let j = previousStart; j < start; j++) {
+      const value = values[j];
+      if (typeof value === 'number' && !Number.isNaN(value)) {
+        sum -= value;
+        count--;
+      }
     }
 
-    let sum = 0;
-    let count = 0;
-
-    for (let j = start; j <= end; j++) {
+    for (let j = previousEnd + 1; j <= end; j++) {
       const value = values[j];
       if (typeof value === 'number' && !Number.isNaN(value)) {
         sum += value;
         count++;
       }
     }
+
+    previousStart = start;
+    previousEnd = end;
 
     if (count >= minPeriods && count > 0) {
       result[i] = reducer === 'sum' ? sum : sum / count;

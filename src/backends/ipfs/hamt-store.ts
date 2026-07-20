@@ -11,11 +11,12 @@ import { concat as uint8ArrayConcat } from "uint8arrays/concat";
 import all from "it-all";
 import { blake3 as b3 } from "@noble/hashes/blake3.js";
 import { CID, hasher } from "multiformats";
-// eslint-disable-next-line import/no-extraneous-dependencies
-import { UnixFS } from "ipfs-unixfs";
 
 import * as zarr from "zarrita";
 import { IPFSELEMENTS_INTERFACE } from "./ipfs-elements";
+
+const RAW_CODEC_CODE = 0x55;
+const DAG_PB_CODEC_CODE = 0x70;
 
 type ExperimentalV3RootMetadata = {
     zarr_format: 3;
@@ -208,6 +209,10 @@ export class HamtStore implements AsyncReadable {
 
     private cache: Map<string, Node> = new Map();
 
+    private cacheSizes: Map<string, number> = new Map();
+
+    private cachedBytes: number = 0;
+
     private readonly maxCacheSize: number = 30_000_000; // 30MB
 
     public metadata: any;
@@ -249,17 +254,23 @@ export class HamtStore implements AsyncReadable {
         }
         const bytes = await this.ipfsElements.dagCbor.components.blockstore.get(nodeId);
         const node = Node.deserialize(bytes);
+        this.cachedBytes -= this.cacheSizes.get(cidStr) ?? 0;
         this.cache.set(cidStr, node);
+        this.cacheSizes.set(cidStr, bytes.byteLength);
+        this.cachedBytes += bytes.byteLength;
         this.maintainCacheSize();
         return node;
     }
 
     private maintainCacheSize(): void {
-        if (this.cache.size > this.maxCacheSize) {
+        while (this.cachedBytes > this.maxCacheSize) {
             const firstKey = this.cache.keys().next().value;
-            if (firstKey) {
-                this.cache.delete(firstKey);
+            if (firstKey === undefined) {
+                break;
             }
+            this.cache.delete(firstKey);
+            this.cachedBytes -= this.cacheSizes.get(firstKey) ?? 0;
+            this.cacheSizes.delete(firstKey);
         }
     }
 
@@ -328,42 +339,36 @@ export class HamtStore implements AsyncReadable {
         throw new KeyError(normalizedKey);
     }
 
-    /** Fetch item data, with optional range support */
-    private async fetchItem(cid: any, range?: { offset: number; length: number }): Promise<Uint8Array> {
-        if (cid.codec === "raw") {
-            // Raw block: fetch entire block and slice if range is specified
+    /** Fetch item data, with optional range support (byte offset/length or a suffix). */
+    private async fetchItem(
+        cid: any,
+        range?: { offset: number; length: number } | { suffix: number },
+    ): Promise<Uint8Array> {
+        if (cid.code === RAW_CODEC_CODE) {
+            // Raw block: fetch the (single, small) block and slice if a range is specified.
             const block = await this.ipfsElements.dagCbor.components.blockstore.get(cid);
-            if (range) {
-                const { offset, length } = range;
-                return block.slice(offset, offset + length);
+            if (!range) {
+                return block;
             }
-            return block;
+            if ("suffix" in range) {
+                return block.slice(Math.max(block.length - range.suffix, 0));
+            }
+            return block.slice(range.offset, range.offset + range.length);
         }
-        if (cid.codec === "dag-pb") {
-            // UnixFS file: use range-capable unixfs.cat
-            const catOptions = range ? { offset: range.offset, length: range.length } : {};
+        if (cid.code === DAG_PB_CODEC_CODE) {
+            // UnixFS file: use range-capable unixfs.cat. Suffix reads go straight to the
+            // gateway's native suffix range (`bytes=-N`) so we never download the whole
+            // file just to compute its size — important for large Zarr shards.
+            let catOptions: { offset?: number; length?: number; suffix?: number } = {};
+            if (range) {
+                catOptions = "suffix" in range
+                    ? { suffix: range.suffix }
+                    : { offset: range.offset, length: range.length };
+            }
             const chunks = await all(this.ipfsElements.unixfs.cat(cid, catOptions));
             return uint8ArrayConcat(chunks as Uint8Array[]);
         }
-        throw new Error(`Unsupported CID codec: ${cid.codec}`);
-    }
-
-    /** Get the size of an item based on its CID */
-    private async getItemSize(cid: any): Promise<number> {
-        if (cid.codec === "raw") {
-            const block = await this.ipfsElements.dagCbor.components.blockstore.get(cid);
-            return block.length;
-        }
-        if (cid.codec === "dag-pb") {
-            const bytes = await this.ipfsElements.dagCbor.components.blockstore.get(cid);
-            const unixfsFile = UnixFS.unmarshal(bytes);
-            if (unixfsFile.type === "file") {
-                return Number(unixfsFile.fileSize());
-            }
-            throw new Error("Not a file");
-        } else {
-            throw new Error(`Unsupported CID codec: ${cid.codec}`);
-        }
+        throw new Error(`Unsupported CID codec: ${cid.code}`);
     }
 
     private async ensureMetadataLoaded(): Promise<void> {
@@ -407,7 +412,7 @@ export class HamtStore implements AsyncReadable {
             const metadataKeys = new Set<string>();
             metadataKeys.add("zarr.json");
             // This may need to change in the future
-            const consolidated = rootMeta?.consolidated_metadata.metadata;
+            const consolidated = rootMeta?.consolidated_metadata?.metadata;
             if (consolidated && typeof consolidated === "object") {
                 for (const [nodeName] of Object.entries(consolidated)) {
                     const normalizedName = this.normalizeKey(nodeName);
@@ -443,9 +448,7 @@ export class HamtStore implements AsyncReadable {
         try {
             const cid = await this.findCIDForKey(key);
             if ("suffixLength" in range) {
-                const size = await this.getItemSize(cid);
-                const offset = size - range.suffixLength;
-                return await this.fetchItem(cid, { offset, length: range.suffixLength });
+                return await this.fetchItem(cid, { suffix: range.suffixLength });
             }
             return await this.fetchItem(cid, { offset: range.offset, length: range.length });
         } catch (e) {

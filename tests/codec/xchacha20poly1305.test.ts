@@ -6,13 +6,14 @@ import { ZarrBackend } from '../../src/backends/zarr';
 
 const KEY_HEX = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const NONCE = Uint8Array.from({ length: 24 }, (_, i) => i + 1);
+const HEADER = 'dclimate-zarr-header';
 const DATA_VALUES = [1.5, -2.5, 3.25, 4.75];
 
 function buildEncryptedChunk(): Uint8Array {
   const keyBytes = hexToBytes(KEY_HEX);
   const plain = new Float64Array(DATA_VALUES);
   const plainBytes = new Uint8Array(plain.buffer.slice(0));
-  const cipher = xchacha20poly1305(keyBytes, NONCE);
+  const cipher = xchacha20poly1305(keyBytes, NONCE, new TextEncoder().encode(HEADER));
   const ciphertext = cipher.encrypt(plainBytes);
   const chunk = new Uint8Array(NONCE.length + ciphertext.length);
   chunk.set(NONCE, 0);
@@ -31,7 +32,7 @@ function createEncryptedStore(): MemoryZarrStore {
       codecs: [
         {
           name: 'xchacha20poly1305',
-          // configuration: { header: HEADER }
+          configuration: { header: HEADER }
         }
       ]
     }
@@ -54,7 +55,7 @@ describe('xchacha20poly1305 codec integration', () => {
   test('decodes encrypted chunks when registered with the correct key', async () => {
     registerXChaCha20Poly1305Codec({
       getKey: () => KEY_HEX,
-      // getHeader: () => HEADER,
+      getHeader: () => HEADER,
       nonceGenerator: () => NONCE
     });
 

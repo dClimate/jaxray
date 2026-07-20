@@ -18,6 +18,6 @@ describe("createIpfsElements", () => {
     }
 
     expect(chunks).toEqual([bytes]);
-    expect(loadSpy).toHaveBeenCalledWith("bafytest", 10, 3);
+    expect(loadSpy).toHaveBeenCalledWith("bafytest", 10, 3, null);
   });
 });

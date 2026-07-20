@@ -102,6 +102,44 @@ export function reshape(data: DataValue[], shape: number[]): NDArray {
 }
 
 /**
+ * Reshape a flat array (plain or TypedArray) into a nested array without
+ * materializing an intermediate flat copy or per-level slice copies.
+ * Rows are built directly from the flat buffer in a single pass.
+ */
+export function reshapeFlat(flat: ArrayLike<any>, shape: number[]): NDArray {
+  if (shape.length === 0) {
+    return (flat as any)[0];
+  }
+
+  const isTyped = ArrayBuffer.isView(flat);
+  const lastDim = shape.length - 1;
+  const strides = new Array(shape.length);
+  strides[lastDim] = 1;
+  for (let dim = lastDim - 1; dim >= 0; dim--) {
+    strides[dim] = strides[dim + 1] * shape[dim + 1];
+  }
+
+  const build = (offset: number, dim: number): any => {
+    const size = shape[dim];
+    if (dim === lastDim) {
+      if (isTyped) {
+        return Array.from((flat as any).subarray(offset, offset + size));
+      }
+      return (flat as any).slice(offset, offset + size);
+    }
+
+    const stride = strides[dim];
+    const result = new Array(size);
+    for (let index = 0; index < size; index++) {
+      result[index] = build(offset + index * stride, dim + 1);
+    }
+    return result;
+  };
+
+  return build(0, 0) as NDArray;
+}
+
+/**
  * Get element at index from multi-dimensional array
  */
 export function getAtIndex(data: NDArray, indices: number[]): DataValue {
@@ -134,6 +172,40 @@ export function setAtIndex(data: NDArray, indices: number[], value: DataValue): 
   } else {
     throw new Error('Index out of bounds');
   }
+}
+
+/**
+ * Internal Zarr bookkeeping fields stored on `attrs`. These are treated as
+ * immutable and can be large (notably `_zarr_coords`, which embeds full
+ * coordinate arrays), so `cloneAttrs` shares them by reference instead of
+ * deep-cloning them on every DataArray construction.
+ */
+const HEAVY_ATTR_KEYS = new Set<string>([
+  '_zarr_coords',
+  '_zarr_shape',
+  '_coordAttrs',
+  'codecs',
+]);
+
+/**
+ * Clone an attributes object for a new DataArray.
+ *
+ * User-visible attributes (including nested objects) are deep-cloned so that
+ * mutating one array's attrs can never corrupt another array's metadata. The
+ * known-heavy internal Zarr fields are shared by reference to avoid the cost of
+ * deep-cloning large coordinate arrays on every operation — they are treated as
+ * immutable and are never mutated in place by the library.
+ */
+export function cloneAttrs<T extends Record<string, any>>(attrs: T | undefined): T {
+  if (!attrs) {
+    return {} as T;
+  }
+  const result: Record<string, any> = {};
+  for (const key of Object.keys(attrs)) {
+    const value = attrs[key];
+    result[key] = HEAVY_ATTR_KEYS.has(key) ? value : deepClone(value);
+  }
+  return result as T;
 }
 
 /**

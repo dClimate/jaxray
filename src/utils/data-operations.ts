@@ -3,8 +3,24 @@
  * Handles array traversal, selection, slicing, and mathematical operations
  */
 
-import { NDArray, DataValue } from '../types.js';
+import { NDArray, DataValue, FlatData, FlatDataStorage } from '../types.js';
 import { deepClone } from '../utils.js';
+
+/**
+ * Coerce a leaf value into the number used by numeric reductions (sum/count/mean).
+ * Numbers pass through (NaN excluded); booleans reduce as 1/0 to match the
+ * element-wise `sum` reducer (`acc + (val as number)`). Everything else
+ * (strings, null, undefined) is skipped by returning `undefined`.
+ */
+function toReducibleNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isNaN(value) ? undefined : value;
+  }
+  if (typeof value === 'boolean') {
+    return value ? 1 : 0;
+  }
+  return undefined;
+}
 
 /**
  * Sum all values in N-dimensional array without flattening - O(n) time, O(1) extra space
@@ -19,8 +35,11 @@ export function sumAll(data: NDArray): number {
       for (let i = current.length - 1; i >= 0; i--) {
         stack.push(current[i]);
       }
-    } else if (typeof current === 'number') {
-      sum += current;
+    } else {
+      const numeric = toReducibleNumber(current);
+      if (numeric !== undefined) {
+        sum += numeric;
+      }
     }
   }
 
@@ -28,7 +47,7 @@ export function sumAll(data: NDArray): number {
 }
 
 /**
- * Count all elements in N-dimensional array without flattening - O(n) time, O(1) extra space
+ * Count all valid numeric elements in N-dimensional array without flattening - O(n) time, O(1) extra space
  */
 export function countAll(data: NDArray): number {
   let count = 0;
@@ -40,12 +59,131 @@ export function countAll(data: NDArray): number {
       for (let i = current.length - 1; i >= 0; i--) {
         stack.push(current[i]);
       }
-    } else {
+    } else if (toReducibleNumber(current) !== undefined) {
       count++;
     }
   }
 
   return count;
+}
+
+/** Sum numeric values directly from row-major storage. */
+export function sumFlat(data: FlatDataStorage): number {
+  let sum = 0;
+  for (let index = 0; index < data.length; index++) {
+    const numeric = toReducibleNumber(data[index]);
+    if (numeric !== undefined) sum += numeric;
+  }
+  return sum;
+}
+
+/** Count valid numeric values directly from row-major storage. */
+export function countFlat(data: FlatDataStorage): number {
+  let count = 0;
+  for (let index = 0; index < data.length; index++) {
+    if (toReducibleNumber(data[index]) !== undefined) count++;
+  }
+  return count;
+}
+
+/**
+ * Reduce one dimension of row-major storage without constructing the source's
+ * nested representation. Reduction results remain flat until a consumer asks
+ * the resulting DataArray for `.values`.
+ */
+export function reduceFlatAlongDimension(
+  source: FlatData,
+  dimIndex: number,
+  operation: 'sum' | 'mean'
+): FlatData {
+  const outputShape = source.shape.filter((_, index) => index !== dimIndex);
+  const outputSize = outputShape.reduce((size, dimension) => size * dimension, 1);
+  const output = new Array<DataValue>(outputSize);
+  const sourceStrides = new Array(source.shape.length);
+  let stride = 1;
+  for (let dim = source.shape.length - 1; dim >= 0; dim--) {
+    sourceStrides[dim] = stride;
+    stride *= source.shape[dim];
+  }
+
+  for (let outputOffset = 0; outputOffset < outputSize; outputOffset++) {
+    let remainder = outputOffset;
+    let sourceBaseOffset = 0;
+    let outputDim = outputShape.length - 1;
+    for (let dim = source.shape.length - 1; dim >= 0; dim--) {
+      if (dim === dimIndex) continue;
+      const index = remainder % outputShape[outputDim];
+      remainder = Math.floor(remainder / outputShape[outputDim]);
+      sourceBaseOffset += index * sourceStrides[dim];
+      outputDim--;
+    }
+
+    const reducedDimensionIsEmpty = source.shape[dimIndex] === 0;
+    const startAtFirstValue = operation === 'sum' &&
+      dimIndex === 0 &&
+      source.shape.length > 1 &&
+      !reducedDimensionIsEmpty;
+    let sum: any = startAtFirstValue
+      ? source.data[sourceBaseOffset]
+      : 0;
+    let count = 0;
+    for (let index = startAtFirstValue ? 1 : 0; index < source.shape[dimIndex]; index++) {
+      const value = source.data[sourceBaseOffset + index * sourceStrides[dimIndex]];
+      if (operation === 'sum') {
+        sum = sum + (value as any);
+      } else {
+        const numeric = toReducibleNumber(value);
+        if (numeric !== undefined) {
+          sum += numeric;
+          count++;
+        }
+      }
+    }
+    output[outputOffset] = operation === 'mean'
+      ? (count === 0 ? Number.NaN : sum / count)
+      : sum;
+  }
+
+  return { data: output, shape: outputShape };
+}
+
+/**
+ * Compute the mean along a dimension, skipping non-numeric and NaN values.
+ */
+export function meanAlongDimension(data: NDArray, dimIndex: number): NDArray {
+  if (!Array.isArray(data)) {
+    return Number.NaN;
+  }
+
+  if (dimIndex > 0) {
+    return data.map(item => meanAlongDimension(item, dimIndex - 1)) as NDArray;
+  }
+
+  const meanAcrossFirstDimension = (values: any[]): any => {
+    if (values.length === 0) {
+      return Number.NaN;
+    }
+
+    if (Array.isArray(values[0])) {
+      return values[0].map((_: any, index: number) =>
+        meanAcrossFirstDimension(values.map(value => value[index]))
+      );
+    }
+
+    let sum = 0;
+    let count = 0;
+    for (const value of values) {
+      const numeric = toReducibleNumber(value);
+      if (numeric !== undefined) {
+        sum += numeric;
+        count++;
+      }
+    }
+
+    return count === 0 ? Number.NaN : sum / count;
+  };
+
+  return meanAcrossFirstDimension(data);
 }
 
 /**

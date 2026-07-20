@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   sumAll,
   countAll,
+  meanAlongDimension,
   divideArray,
   elementWiseOp,
   reshapeSqueezed,
@@ -54,6 +55,11 @@ describe('sumAll', () => {
     const data = [-1, -2, 3, 4];
     expect(sumAll(data)).toBe(4);
   });
+
+  it('should skip null and NaN values', () => {
+    const data = [1, null, Number.NaN, 2];
+    expect(sumAll(data)).toBe(3);
+  });
 });
 
 describe('countAll', () => {
@@ -88,6 +94,35 @@ describe('countAll', () => {
   it('should count arrays with mixed dimensions', () => {
     const data = [[1, 2, 3], [4, 5]];
     expect(countAll(data)).toBe(5);
+  });
+
+  it('should count only valid numeric values', () => {
+    // null, NaN and the string '2' are skipped; booleans count as 1/0
+    // (consistent with sum/mean, matching numpy/xarray semantics).
+    const data = [1, null, Number.NaN, '2', false];
+    expect(countAll(data)).toBe(2);
+  });
+});
+
+describe('meanAlongDimension', () => {
+  it('should use a valid count for each cell', () => {
+    const data = [[1, null, Number.NaN], [3, null, 5]];
+    const result = meanAlongDimension(data, 0) as number[];
+
+    expect(result[0]).toBe(2);
+    expect(result[1]).toBeNaN();
+    expect(result[2]).toBe(5);
+  });
+
+  it('should skip invalid values when reducing a later dimension', () => {
+    const data = [[1, null, 3], [null, Number.NaN, 6]];
+    expect(meanAlongDimension(data, 1)).toEqual([2, 6]);
+  });
+
+  it('should treat booleans as 1/0 (consistent with sum), not drop them', () => {
+    // Regression: booleans were silently skipped, turning [true, false] into NaN.
+    expect(meanAlongDimension([true, false] as any, 0)).toBe(0.5);
+    expect(meanAlongDimension([[true, false], [true, true]] as any, 1)).toEqual([0.5, 1]);
   });
 });
 

@@ -75,7 +75,7 @@ describe('performLazySelection', () => {
       expect(result.coords.y).toEqual([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
     });
 
-    test('should create identity mapping when no selection provided', () => {
+    test('should pass requested ranges through when no selection is provided', async () => {
       const loader = createMockLoader();
       const params: LazySelectionParams = {
         selection: {},
@@ -87,8 +87,9 @@ describe('performLazySelection', () => {
       };
 
       const result = performLazySelection(params);
+      await result.lazyLoader({ x: { start: 1, stop: 3 } });
 
-      expect(result.originalIndexMapping.x).toEqual([0, 1, 2]);
+      expect(loader).toHaveBeenCalledWith({ x: { start: 1, stop: 3 } });
     });
   });
 
@@ -163,7 +164,7 @@ describe('performLazySelection', () => {
       expect(result.dims).toEqual(['x']);
     });
 
-    test('should use originalIndexMapping when provided', () => {
+    test('should pass the parent-space scalar index to the parent loader', () => {
       const loader = createMockLoader();
       const params: LazySelectionParams = {
         selection: { x: 20 }, // Select coordinate value 20 (at index 1)
@@ -183,13 +184,13 @@ describe('performLazySelection', () => {
 
       const result = performLazySelection(params);
 
-      // When we select coordinate value 20 (index 1), it should map to original index 10
+      // The parent loader owns the mapping from parent index 1 to original index 10.
       const testLoader = result.lazyLoader;
       testLoader({ y: { start: 0, stop: 2 } });
 
       expect(loader).toHaveBeenCalledWith(
         expect.objectContaining({
-          x: 10 // Should use the originalIndexMapping
+          x: 1
         })
       );
     });
@@ -440,7 +441,7 @@ describe('performLazySelection', () => {
       });
     });
 
-    test('should clamp out-of-bounds scalar indices', async () => {
+    test('should reject out-of-bounds scalar indices', async () => {
       const loader = createMockLoader();
       const params: LazySelectionParams = {
         selection: { x: { start: 10, stop: 30 } }, // Select coords 10, 20, 30 (indices 1-3)
@@ -452,13 +453,10 @@ describe('performLazySelection', () => {
       };
 
       const result = performLazySelection(params);
-      // Result has 3 elements, requesting index 100 should clamp to last element (original index 3)
-      await result.lazyLoader({ x: 100 });
-
-      // Should clamp to max original index (3)
-      expect(loader).toHaveBeenCalledWith({
-        x: 3
-      });
+      await expect(result.lazyLoader({ x: 100 })).rejects.toThrow(
+        "Lazy selection index 100 out of bounds for dimension 'x' of length 3"
+      );
+      expect(loader).not.toHaveBeenCalled();
     });
 
     test('should handle single element selection', async () => {
@@ -484,7 +482,7 @@ describe('performLazySelection', () => {
   });
 
   describe('attributes and metadata', () => {
-    test('should deep clone attributes', () => {
+    test('should isolate top-level attribute mutations', () => {
       const loader = createMockLoader();
       const attrs: Attributes = {
         description: 'test data',
@@ -504,7 +502,9 @@ describe('performLazySelection', () => {
 
       expect(result.attrs).toEqual(attrs);
       expect(result.attrs).not.toBe(attrs);
-      expect((result.attrs as any).nested).not.toBe((attrs as any).nested);
+
+      result.attrs.description = 'selected data';
+      expect(attrs.description).toBe('test data');
     });
 
     test('should preserve name', () => {
