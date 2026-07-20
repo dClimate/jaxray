@@ -2,17 +2,42 @@
 import * as zarr from "zarrita";
 import { Dataset } from "../Dataset.js";
 import { DataArray } from "../DataArray.js";
-import { reshapeFlat } from "../utils.js";
-import { DataValue, NDArray } from "../types.js";
-import { cfTimeToDate, isTimeCoordinate } from "../time/cf-time.js";
+import { DataValue, FlatDataStorage } from "../types.js";
+import { decodeCFTime, isTimeCoordinate } from "../time/cf-time.js";
+
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
+
+// int64/uint64 values arrive from zarrita as bigint (scalars) or BigInt64Array/
+// BigUint64Array (arrays). DataValue cannot hold a bigint, so each value is
+// narrowed to a number — but only when it is exactly representable. Coercing a
+// value beyond ±2^53 would silently corrupt it (e.g. 9007199254740993n would
+// read back as 9007199254740992), so those are rejected loudly instead.
+function bigIntToNumber(value: bigint): number {
+  if (value > MAX_SAFE_BIGINT || value < MIN_SAFE_BIGINT) {
+    throw new Error(
+      `Cannot read 64-bit integer ${value} as a JavaScript number without loss of precision ` +
+        `(magnitude exceeds Number.MAX_SAFE_INTEGER, 2^53 - 1).`
+    );
+  }
+  return Number(value);
+}
+
+function narrowBigInt(value: unknown): unknown {
+  if (typeof value === "bigint") return bigIntToNumber(value);
+  if ((value instanceof BigInt64Array || value instanceof BigUint64Array) && value.length === 1) {
+    return bigIntToNumber(value[0]);
+  }
+  return value;
+}
 
 function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | undefined): any[] {
   const normalized = values.map((value) => {
+    // Narrow int64/uint64 coordinate labels through the same precision guard as
+    // data values: coercing a value beyond ±2^53 would silently corrupt the
+    // label (and every selection against it), so those are rejected loudly.
     if (typeof value === "bigint") {
-      const asNumber = Number(value);
-      if (Number.isFinite(asNumber)) {
-        return asNumber;
-      }
+      return bigIntToNumber(value);
     }
     return value;
   });
@@ -21,13 +46,14 @@ function normalizeCoordinateValues(values: any[], attrs: Record<string, any> | u
     const units: string | undefined = attrs.units;
     const calendar: string | undefined = attrs.calendar;
     if (units) {
-      return normalized.map((value) => {
+      const decodedValues = normalized.map((value) => {
         if (typeof value === "number") {
-          const date = cfTimeToDate(value, units, calendar)?.toISOString();
-          return date ?? value;
+          return decodeCFTime(value, units, calendar) ?? value;
         }
-        return value.toISOString();
+        return value;
       });
+
+      return decodedValues.map((value) => value instanceof Date ? value.toISOString() : value);
     }
   }
 
@@ -340,16 +366,23 @@ export class ZarrBackend {
           return arr.shape[i];
         }).filter(s => s !== undefined) as number[];
 
+        const rawResult = result.data !== undefined ? result.data : result;
+
         // Handle scalar result (all dimensions were single indices)
         if (resultShape.length === 0) {
-          const scalarValue = result.data !== undefined ? result.data : result;
-          return scalarValue as unknown as DataValue;
+          return narrowBigInt(rawResult) as unknown as DataValue;
         }
 
-        // Handle array result: reshape directly from the decoded (typed) array,
-        // avoiding a boxed Array.from copy of the whole selection.
-        const flatData = (result.data !== undefined ? result.data : result) as ArrayLike<DataValue>;
-        return reshapeFlat(flatData, resultShape);
+        // int64/uint64 arrays arrive as BigInt64Array/BigUint64Array, which the
+        // flat-data path (FlatDataStorage / isFlatData) does not accept — passing
+        // one through makes DataArray treat the payload as scalar and throw a
+        // dimension mismatch. Narrow them to a number[] (rejecting any value that
+        // cannot be represented exactly) so every dtype flows through the flat path.
+        const flatData: FlatDataStorage =
+          rawResult instanceof BigInt64Array || rawResult instanceof BigUint64Array
+            ? Array.from(rawResult, bigIntToNumber)
+            : (rawResult as FlatDataStorage);
+        return { data: flatData, shape: resultShape };
       };
 
       dataVars[arr.name] = new DataArray(null, {

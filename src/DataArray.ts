@@ -5,6 +5,8 @@
 
 import {
   NDArray,
+  DataArrayInput,
+  FlatData,
   DataValue,
   DimensionName,
   Coordinates,
@@ -20,8 +22,12 @@ import {
 import { getShape, flatten, deepClone, cloneAttrs } from './utils.js';
 import {
   createEagerBlock,
+  createTypedBlock,
   createLazyBlock,
+  isFlatData,
   isLazyBlock,
+  selectFlatData,
+  type FlatIndexSelection,
   type DataBlock
 } from './core/data-block.js';
 import {
@@ -32,12 +38,15 @@ import {
   type ArrayWhereOperand,
   type BinaryOpOptions
 } from './ops/where.js';
-import { isTimeCoordinate, parseCFTimeUnits, cfTimeToDate } from './time/cf-time.js';
+import { decodeCFTime, isTimeCoordinate, parseCFTimeUnits } from './time/cf-time.js';
 import { findCoordinateIndex } from './utils/coordinate-indexing.js';
 import {
   sumAll,
+  sumFlat,
   countAll,
+  countFlat,
   meanAlongDimension,
+  reduceFlatAlongDimension,
   elementWiseOp,
   reshapeSqueezed,
   selectAtDimension,
@@ -70,7 +79,7 @@ export class DataArray {
   private _dimIndexMap: Map<string, number> = new Map();
   // private _precisionFactor: number;
 
-  constructor(data: NDArray, options: DataArrayOptions = {}) {
+  constructor(data: DataArrayInput, options: DataArrayOptions = {}) {
     // Initialize precision factor (default 6)
     // this._precisionFactor = Math.pow(10, this._precision);
 
@@ -111,8 +120,10 @@ export class DataArray {
       return;
     }
 
-    const shape = getShape(data);
-    this._block = createEagerBlock(data);
+    const shape = isFlatData(data) ? data.shape : getShape(data);
+    this._block = isFlatData(data)
+      ? createTypedBlock(data.data, data.shape)
+      : createEagerBlock(data);
     this._shape = [...shape];
     // Isolate nested user attrs while sharing heavy Zarr metadata by reference.
     this._attrs = cloneAttrs(options.attrs);
@@ -180,10 +191,22 @@ export class DataArray {
   }
 
   /**
-   * Get the values (alias for data)
+   * Get the values (alias for data). Flat-backed arrays cache this as a nested
+   * snapshot separate from `flatData`; both views are read-only by contract and
+   * must not be mutated.
    */
   get values(): NDArray {
     return this.data;
+  }
+
+  /**
+   * Live row-major storage when this eager array was constructed from flat data.
+   * This may coexist with a separately cached nested `values` snapshot; both
+   * views are read-only by contract and must not be mutated.
+   */
+  get flatData(): FlatData | null {
+    if (isLazyBlock(this._block)) return null;
+    return this._block.flatData;
   }
 
   /**
@@ -312,7 +335,7 @@ export class DataArray {
     const newData = this._selectData(selection, options, selectedIndices);
     const newDims: DimensionName[] = [];
     const newCoords: Coordinates = {};
-    const newShape = getShape(newData);
+    const newShape = isFlatData(newData) ? newData.shape : getShape(newData);
 
     let shapeIndex = 0;
     for (const dim of this._dims) {
@@ -331,7 +354,7 @@ export class DataArray {
           const sel = selection[dim];
           if (Array.isArray(sel)) {
             newCoords[dim] = selectedIndices[dim].map(index => this._coords[dim][index]);
-          } else if (typeof sel === 'object' && 'start' in sel) {
+          } else if (sel && typeof sel === 'object' && ('start' in sel || 'stop' in sel)) {
             const { start, stop } = sel;
             const coordSlice = this._getCoordinateSlice(dim, start, stop, options);
             newCoords[dim] = coordSlice;
@@ -404,7 +427,7 @@ export class DataArray {
       const indices = dimSelection.map(v => findCoordinateIndex(this._coords[chunkDim], v, { method, tolerance }, chunkDim, chunkDimAttrs));
       startIdx = Math.min(...indices);
       endIdx = Math.max(...indices);
-    } else if (typeof dimSelection === 'object' && 'start' in dimSelection) {
+    } else if (dimSelection && typeof dimSelection === 'object' && ('start' in dimSelection || 'stop' in dimSelection)) {
       // Slice selection
       const { start, stop } = dimSelection;
       startIdx = start !== undefined ? findCoordinateIndex(this._coords[chunkDim], start, { method, tolerance }, chunkDim, chunkDimAttrs) : 0;
@@ -535,7 +558,13 @@ export class DataArray {
       });
     }
 
-    let data: any = this._block.materialize();
+    const sourceFlatData = this.flatData;
+    let data: DataArrayInput = sourceFlatData
+      ? selectFlatData(
+          sourceFlatData,
+          this._dims.map(dim => indexSelection[dim])
+        )
+      : this._block.materialize();
     let dimensionsDropped = 0;
     const dims: DimensionName[] = [];
     const coords: Coordinates = {};
@@ -545,14 +574,18 @@ export class DataArray {
       const selected = indexSelection[dim];
 
       if (typeof selected === 'number') {
-        data = selectAtDimension(data, i - dimensionsDropped, selected);
+        if (!sourceFlatData) {
+          data = selectAtDimension(data, i - dimensionsDropped, selected);
+        }
         dimensionsDropped++;
         continue;
       }
 
       dims.push(dim);
       if (Array.isArray(selected)) {
-        data = selectMultipleAtDimension(data, i - dimensionsDropped, selected);
+        if (!sourceFlatData) {
+          data = selectMultipleAtDimension(data, i - dimensionsDropped, selected);
+        }
         coords[dim] = selected.map(index => this._coords[dim][index]);
       } else {
         coords[dim] = this._coords[dim];
@@ -573,7 +606,8 @@ export class DataArray {
   sum(dim?: DimensionName): DataArray | number {
     if (!dim) {
       // Sum all values using iterative approach (no flatten needed)
-      return sumAll(this._block.materialize());
+      const flatData = this.flatData;
+      return flatData ? sumFlat(flatData.data) : sumAll(this._block.materialize());
     }
 
     const dimIndex = this._getDimIndex(dim);
@@ -581,12 +615,15 @@ export class DataArray {
       throw new Error(`Dimension '${dim}' not found`);
     }
 
-    const result = this._reduce(dimIndex, (acc, val) => acc + (val as number));
+    const flatData = this.flatData;
+    const result = flatData
+      ? reduceFlatAlongDimension(flatData, dimIndex, 'sum')
+      : this._reduce(dimIndex, (acc, val) => acc + (val as number));
     const newDims = this._dims.filter((_, i) => i !== dimIndex);
 
     // If all dimensions are reduced, return a scalar
     if (newDims.length === 0) {
-      return result as number;
+      return flatData ? result.data[0] as number : result as number;
     }
 
     const newCoords: Coordinates = {};
@@ -608,9 +645,10 @@ export class DataArray {
    */
   mean(dim?: DimensionName): DataArray | number {
     if (!dim) {
-      const data = this._block.materialize();
-      const sum = sumAll(data);
-      const count = countAll(data);
+      const flatData = this.flatData;
+      const data = flatData?.data;
+      const sum = data ? sumFlat(data) : sumAll(this._block.materialize());
+      const count = data ? countFlat(data) : countAll(this._block.materialize());
       return sum / count;
     }
 
@@ -619,13 +657,16 @@ export class DataArray {
       throw new Error(`Dimension '${dim}' not found`);
     }
 
-    const meanResult = meanAlongDimension(this._block.materialize(), dimIndex);
+    const flatData = this.flatData;
+    const meanResult = flatData
+      ? reduceFlatAlongDimension(flatData, dimIndex, 'mean')
+      : meanAlongDimension(this._block.materialize(), dimIndex);
 
     const newDims = this._dims.filter((_, i) => i !== dimIndex);
 
     // If all dimensions are reduced, return a scalar
     if (newDims.length === 0) {
-      return meanResult as number;
+      return flatData ? (meanResult as FlatData).data[0] as number : meanResult as number;
     }
 
     const newCoords: Coordinates = {};
@@ -691,6 +732,7 @@ export class DataArray {
     clone._dims = [...this._dims];
     clone._shape = [...this._shape];
     clone._precision = this._precision;
+    clone._dimIndexMap = new Map(this._dimIndexMap);
     clone._coords = options?.coords ? deepClone(options.coords) : deepClone(this._coords);
     clone._attrs = options?.attrs ? deepClone(options.attrs) : deepClone(this._attrs);
     clone._name = options?.name ?? this._name;
@@ -958,7 +1000,7 @@ export class DataArray {
   toRecords(options?: { precision?: number }): Array<Record<string, any>> {
     const precision = options?.precision !== undefined ? options.precision : 6;
     const records: Array<Record<string, any>> = [];
-    const flatData = flatten(this._block.materialize());
+    const flatData = this.flatData?.data ?? flatten(this._block.materialize());
 
     // Helper function to round numbers
     const factor = Math.pow(10, precision);
@@ -967,7 +1009,7 @@ export class DataArray {
     };
 
     // Pre-check which dimensions are time coordinates
-    const timeCoordInfo: { [dim: string]: string } = {};
+    const timeCoordInfo: { [dim: string]: { units: string; calendar?: string } } = {};
     const coordAttrs = (this._attrs as any)?._coordAttrs;
 
     for (const dim of this._dims) {
@@ -975,7 +1017,10 @@ export class DataArray {
       if (isTimeCoordinate(dimAttrs)) {
         const units = dimAttrs?.units as string | undefined;
         if (units) {
-          timeCoordInfo[dim] = units;
+          timeCoordInfo[dim] = {
+            units,
+            calendar: dimAttrs?.calendar as string | undefined
+          };
         }
       }
     }
@@ -1008,10 +1053,12 @@ export class DataArray {
 
         // Convert time coordinates to datetime strings
         if (timeCoordInfo[dim] && typeof coordValue === 'number') {
-          const units = timeCoordInfo[dim];
-          const convertedDate = cfTimeToDate(coordValue, units);
-          if (convertedDate) {
-            coordValue = convertedDate.toISOString();
+          const { units, calendar } = timeCoordInfo[dim];
+          const decoded = decodeCFTime(coordValue, units, calendar);
+          if (decoded instanceof Date) {
+            coordValue = decoded.toISOString();
+          } else if (typeof decoded === 'string') {
+            coordValue = decoded;
           }
         } else if (typeof coordValue === 'number') {
           // Round numeric coordinates to avoid floating-point precision errors
@@ -1394,7 +1441,38 @@ export class DataArray {
     selection: Selection,
     options?: SelectionOptions,
     selectedIndices?: { [dimension: string]: number[] }
-  ): NDArray {
+  ): DataArrayInput {
+    const flatData = this.flatData;
+    if (flatData) {
+      const selections: FlatIndexSelection[] = [];
+      for (let i = 0; i < this._dims.length; i++) {
+        const dim = this._dims[i];
+        const sel = selection[dim];
+        if (sel === undefined) {
+          selections.push(undefined);
+          continue;
+        }
+        const coordAttrs = (this._attrs as any)?._coordAttrs;
+        const dimAttrs = coordAttrs?.[dim] || this._attrs;
+        if (typeof sel === 'number' || typeof sel === 'string' || typeof sel === 'bigint' || sel instanceof Date) {
+          selections.push(findCoordinateIndex(this._coords[dim], sel, options, dim, dimAttrs));
+        } else if (Array.isArray(sel)) {
+          const indices = sel.map(value => findCoordinateIndex(this._coords[dim], value, options, dim, dimAttrs));
+          if (selectedIndices) selectedIndices[dim] = indices;
+          selections.push(indices);
+        } else {
+          const startIndex = sel.start !== undefined
+            ? findCoordinateIndex(this._coords[dim], sel.start, options, dim, dimAttrs)
+            : 0;
+          const stopIndex = sel.stop !== undefined
+            ? findCoordinateIndex(this._coords[dim], sel.stop, options, dim, dimAttrs) + 1
+            : this._shape[i];
+          selections.push({ start: startIndex, stop: stopIndex });
+        }
+      }
+      return selectFlatData(flatData, selections);
+    }
+
     let result: any = this._block.materialize();
     let dimensionsDropped = 0;
 
@@ -1423,7 +1501,7 @@ export class DataArray {
         const indices = sel.map(v => findCoordinateIndex(this._coords[dim], v, options, dim, dimAttrs));
         if (selectedIndices) selectedIndices[dim] = indices;
         result = selectMultipleAtDimension(result, currentDimIndex, indices);
-      } else if (typeof sel === 'object' && 'start' in sel) {
+      } else if (sel && typeof sel === 'object' && ('start' in sel || 'stop' in sel)) {
         // Slice selection
         const { start, stop } = sel;
         const coordAttrs = (this._attrs as any)?._coordAttrs;
@@ -1504,7 +1582,7 @@ export class DataArray {
     // Prefer dimensions with range selections
     for (const dim of this._dims) {
       const sel = selection[dim];
-      if (Array.isArray(sel) || (typeof sel === 'object' && 'start' in sel)) {
+      if (Array.isArray(sel) || (sel && typeof sel === 'object' && ('start' in sel || 'stop' in sel))) {
         return dim;
       }
     }

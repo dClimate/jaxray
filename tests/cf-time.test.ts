@@ -65,6 +65,20 @@ describe('parseCFTimeUnits', () => {
     expect(result?.referenceDate).toBeInstanceOf(Date);
   });
 
+  test('should normalize non-padded and compact numeric timezone offsets', () => {
+    // One-digit hour (grammar accepts it) must be zero-padded, not left as -6:00
+    // which ECMAScript Date rejects.
+    expect(parseCFTimeUnits('hours since 2000-01-01 00:00:00 -6')?.referenceDate.getTime())
+      .toBe(new Date('2000-01-01T06:00:00Z').getTime());
+    expect(parseCFTimeUnits('hours since 2000-01-01T00:00:00+6')?.referenceDate.getTime())
+      .toBe(new Date('1999-12-31T18:00:00Z').getTime());
+    // Compact (no colon) and one-digit-hour-with-minutes forms normalize too.
+    expect(parseCFTimeUnits('hours since 2000-01-01T00:00:00-0630')?.referenceDate.getTime())
+      .toBe(new Date('2000-01-01T06:30:00Z').getTime());
+    expect(parseCFTimeUnits('hours since 2000-01-01T00:00:00+6:30')?.referenceDate.getTime())
+      .toBe(new Date('1999-12-31T17:30:00Z').getTime());
+  });
+
   test('should handle date without time component', () => {
     const result = parseCFTimeUnits('days since 2000-01-01');
     expect(result).not.toBeNull();
@@ -111,24 +125,14 @@ describe('cfTimeToDate', () => {
     expect(date?.getTime()).toBe(new Date('2000-01-08T00:00:00Z').getTime());
   });
 
-  test('should convert months (approximate)', () => {
+  test('should refuse months outside the 360_day calendar', () => {
     const date = cfTimeToDate(1, 'months since 2000-01-01');
-    expect(date).not.toBeNull();
-    // Approximately 30 days
-    expect(date?.getTime()).toBeCloseTo(new Date('2000-01-31T00:00:00Z').getTime(), -5);
+    expect(date).toBeNull();
   });
 
-  test('should convert years (approximate)', () => {
+  test('should refuse years rather than approximate them', () => {
     const date = cfTimeToDate(1, 'years since 2000-01-01');
-    expect(date).not.toBeNull();
-    // Approximately 365.25 days = 31557600000ms
-    // Actual 365 days = 31536000000ms, so difference is ~21600000ms (6 hours)
-    // But 2000 was a leap year, so actual is 366 days from 2000-01-01 to 2001-01-01
-    // So we expect about 6-18 hours difference
-    const actual = date?.getTime() || 0;
-    const expected = new Date('2001-01-01T00:00:00Z').getTime();
-    const diff = Math.abs(actual - expected);
-    expect(diff).toBeLessThan(24 * 60 * 60 * 1000); // Within 24 hours
+    expect(date).toBeNull();
   });
 
   test('should return null for invalid units string', () => {
