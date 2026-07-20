@@ -196,20 +196,27 @@ describe('literal CF calendar contracts', () => {
     expect.soft(cfTime.cfTimeToDate(1, 'years since 2000-01-01', '360_day')).toBeNull();
   });
 
-  test('decodeCFTime carries fractional reference seconds that round to one millisecond-second boundary', () => {
+  test('decodeCFTime preserves fractional reference seconds at microsecond precision', () => {
+    // .9995s is 999500 µs — a valid sub-millisecond instant that must be kept as
+    // ...999500, not rounded up across the second (or minute) boundary.
     const decoded = requireDecodeCFTime()(
       0,
       'seconds since 2000-01-01T00:00:00.9995'
     );
+    expect(decoded).toBe('2000-01-01T00:00:00.999500');
 
-    expect(decoded).toBeInstanceOf(Date);
-    expect((decoded as Date).toISOString()).toBe('2000-01-01T00:00:01.000Z');
-
-    const minuteCarry = requireDecodeCFTime()(
+    const nearMinute = requireDecodeCFTime()(
       0,
       'seconds since 2000-01-01T00:00:59.9995'
     );
-    expect((minuteCarry as Date).toISOString()).toBe('2000-01-01T00:01:00.000Z');
+    expect(nearMinute).toBe('2000-01-01T00:00:59.999500');
+
+    // A whole-millisecond reference fraction still decodes to a Date.
+    const wholeMs = requireDecodeCFTime()(
+      0,
+      'seconds since 2000-01-01T00:00:00.5'
+    );
+    expect((wholeMs as Date).toISOString()).toBe('2000-01-01T00:00:00.500Z');
   });
 
   test('decodeCFTime uses the CF standard calendar by default', () => {
@@ -287,6 +294,19 @@ describe('literal CF calendar contracts', () => {
     expect(decodeCFTime(0, 'microseconds since 2000-01-01')).toBeInstanceOf(Date);
     expect(decodeCFTime(1, 'microseconds since 2000-01-01')).toBe('2000-01-01T00:00:00.000001');
     expect(decodeCFTime(1500, 'microseconds since 2000-01-01')).toBe('2000-01-01T00:00:00.001500');
+  });
+
+  test('decodeCFTime preserves a sub-millisecond fraction in the reference date', () => {
+    const decodeCFTime = requireDecodeCFTime();
+
+    // A reference of ...00.0005 (500 µs) must not be rounded up to ...00.001.
+    expect(decodeCFTime(0, 'seconds since 2000-01-01T00:00:00.0005'))
+      .toBe('2000-01-01T00:00:00.000500');
+    // The fraction carries through to whatever offset is applied.
+    expect(decodeCFTime(1, 'milliseconds since 2000-01-01T00:00:00.0005'))
+      .toBe('2000-01-01T00:00:00.001500');
+    expect(decodeCFTime(0, 'seconds since 2000-01-01T00:00:00.000001'))
+      .toBe('2000-01-01T00:00:00.000001');
   });
 
   test('formatCoordinateValue preserves calendar-correct display strings', () => {
@@ -424,6 +444,27 @@ describe('Zarr CF calendar coordinate decoding', () => {
     expect((await variable.sel({ time: '1582-10-04T18:00:00' }, { method: 'nearest' })).data).toBe(20);
     expect((await variable.sel({ time: '1582-10-04T06:00:00' }, { method: 'nearest' })).data).toBe(10);
     expect((await variable.sel({ time: '1582-10-15T00:00:00' })).data).toBe(20);
+  });
+
+  test('microsecond coordinates stay distinct under proleptic_gregorian (sub-ms precision)', async () => {
+    // Two labels one microsecond apart. A millisecond-resolution Date collapses
+    // them onto the same instant, so the fast path must defer to encodeCFTime.
+    const variable = new DataArray([10, 20], {
+      dims: ['time'],
+      coords: { time: ['2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000001'] },
+      attrs: {
+        _coordAttrs: {
+          time: {
+            standard_name: 'time',
+            units: 'microseconds since 2000-01-01',
+            calendar: 'proleptic_gregorian'
+          }
+        }
+      }
+    });
+
+    expect((await variable.sel({ time: '2000-01-01T00:00:00.000001' })).data).toBe(20);
+    expect((await variable.sel({ time: '2000-01-01T00:00:00.000Z' })).data).toBe(10);
   });
 });
 

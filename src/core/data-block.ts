@@ -150,6 +150,20 @@ export function selectFlatData(
     throw new Error('Selection dimensionality does not match data shape');
   }
 
+  // A selection that is undefined/null on every dimension is a whole-array
+  // passthrough (sel({}) / isel({})). Reuse the source storage instead of
+  // allocating and copying a full duplicate of what may be a large TypedArray.
+  let hasSelection = false;
+  for (const selection of selections) {
+    if (selection !== undefined && selection !== null) {
+      hasSelection = true;
+      break;
+    }
+  }
+  if (!hasSelection) {
+    return { data: source.data, shape: [...source.shape] };
+  }
+
   const outputShape: number[] = [];
   for (let dim = 0; dim < source.shape.length; dim++) {
     const selection = selections[dim];

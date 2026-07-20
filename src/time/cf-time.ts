@@ -38,6 +38,16 @@ function splitTimeUnits(unitsStr: string): { unit: CFTimeUnit; reference: string
 }
 
 /**
+ * Whether a CF time-units string counts in increments finer than a millisecond.
+ * A JavaScript Date only carries millisecond precision, so coordinate lookups on
+ * such units must go through {@link encodeCFTime} rather than getTime() diffs;
+ * otherwise neighbouring sub-millisecond labels collapse onto the same instant.
+ */
+export function isSubMillisecondTimeUnit(unitsStr: string): boolean {
+  return splitTimeUnits(unitsStr)?.unit === 'microsecond';
+}
+
+/**
  * Parse CF-compliant time units string
  * Format: "<units> since <reference_date>"
  * Examples:
@@ -182,8 +192,13 @@ function parseCalendarUnits(unitsStr: string): ParsedCalendarUnits | null {
   if (!dateMatch) return null;
 
   const fraction = dateMatch[7] ?? '';
-  const roundedMilliseconds = Math.round(Number(`0.${fraction || '0'}`) * 1000);
-  const carriedSeconds = Math.floor(roundedMilliseconds / 1000);
+  // Preserve the reference fraction at microsecond resolution. Rounding it to
+  // whole milliseconds here would shift every decoded coordinate: a reference of
+  // ...00.0005 (500 µs) must not become ...00.001.
+  const roundedMicroseconds = Math.round(Number(`0.${fraction || '0'}`) * 1_000_000);
+  const carriedSeconds = Math.floor(roundedMicroseconds / 1_000_000);
+  const microsecondOfSecond = roundedMicroseconds - carriedSeconds * 1_000_000;
+  const millisecond = Math.floor(microsecondOfSecond / 1000);
   const timezoneOffsetMinutes = parseTimezoneOffsetMinutes(dateMatch[8]);
   if (timezoneOffsetMinutes === null) return null;
 
@@ -196,7 +211,8 @@ function parseCalendarUnits(unitsStr: string): ParsedCalendarUnits | null {
       hour: Number(dateMatch[4] ?? 0),
       minute: Number(dateMatch[5] ?? 0),
       second: Number(dateMatch[6] ?? 0),
-      millisecond: roundedMilliseconds - carriedSeconds * 1000
+      millisecond,
+      microsecond: microsecondOfSecond - millisecond * 1000
     },
     timezoneOffsetMinutes,
     fractionCarrySeconds: carriedSeconds
@@ -475,7 +491,7 @@ function referenceMicrosecondsOfDay(parsed: ParsedCalendarUnits): number {
     + (parsed.reference.second + parsed.fractionCarrySeconds) * 1000
     + parsed.reference.millisecond
     - parsed.timezoneOffsetMinutes * 60 * 1000;
-  return milliseconds * 1000;
+  return milliseconds * 1000 + (parsed.reference.microsecond ?? 0);
 }
 
 /**

@@ -509,3 +509,31 @@ describe('int64/uint64 Zarr storage narrows to numbers without silent corruption
       .rejects.toThrow('without loss of precision');
   });
 });
+
+describe('selectFlatData short-circuits whole-array no-op selections', () => {
+  const selectFlatData = (dataBlockModule as any).selectFlatData as (
+    source: { data: ArrayLike<any>; shape: number[] },
+    selections: Array<unknown>
+  ) => { data: ArrayLike<any>; shape: number[] };
+
+  test('all-undefined selections reuse the source storage instead of copying', () => {
+    expect(typeof selectFlatData, 'selectFlatData not exported').toBe('function');
+
+    const source = { data: new Float64Array([1, 2, 3, 4, 5, 6]), shape: [2, 3] };
+    const result = selectFlatData(source, [undefined, undefined]);
+
+    // Same buffer, not a duplicate — the semantic no-op must not allocate O(n).
+    expect(result.data).toBe(source.data);
+    expect(result.shape).toEqual([2, 3]);
+    expect(result.shape).not.toBe(source.shape); // shape is a fresh array
+  });
+
+  test('any real selection still allocates a distinct buffer', () => {
+    const source = { data: new Float64Array([1, 2, 3, 4, 5, 6]), shape: [2, 3] };
+    const result = selectFlatData(source, [undefined, { start: 0, stop: 2 }]);
+
+    expect(result.data).not.toBe(source.data);
+    expect(result.shape).toEqual([2, 2]);
+    expect(Array.from(result.data)).toEqual([1, 2, 4, 5]);
+  });
+});
