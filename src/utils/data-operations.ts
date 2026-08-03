@@ -76,7 +76,6 @@ export function countAll(data: NDArray): number {
  * others accumulate in O(1) space.
  */
 export function reduceAll(data: NDArray, operation: ReduceOperation): number {
-  const stack: any[] = [data];
   const collected: number[] | null = operation === 'median' ? [] : null;
   const std = operation === 'std' ? welfordStd() : null;
   let sum = 0;
@@ -84,12 +83,23 @@ export function reduceAll(data: NDArray, operation: ReduceOperation): number {
   let extreme = Number.NaN;
   let seen = false;
 
-  while (stack.length > 0) {
-    const current = stack.pop()!;
+  // One frame per level of nesting, each holding a cursor into its array, so the
+  // stack stays O(depth). Pushing every child instead would hold a reference to
+  // each element at once — O(n) for the flat 1-D case that dominates in practice.
+  const frames: Array<{ array: any[]; index: number }> = [
+    { array: Array.isArray(data) ? data : [data], index: 0 }
+  ];
+
+  while (frames.length > 0) {
+    const frame = frames[frames.length - 1];
+    if (frame.index >= frame.array.length) {
+      frames.pop();
+      continue;
+    }
+
+    const current = frame.array[frame.index++];
     if (Array.isArray(current)) {
-      for (let i = current.length - 1; i >= 0; i--) {
-        stack.push(current[i]);
-      }
+      frames.push({ array: current, index: 0 });
       continue;
     }
 
@@ -205,7 +215,10 @@ function medianOf(values: number[]): number {
   if (values.length === 0) return Number.NaN;
   const sorted = values.slice().sort((a, b) => a - b);
   const mid = sorted.length >> 1;
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+  if (sorted.length % 2 !== 0) return sorted[mid];
+  // Halve before adding: `(a + b) / 2` overflows to Infinity when the pair sums
+  // past Number.MAX_VALUE, even though the median itself is finite.
+  return sorted[mid - 1] / 2 + sorted[mid] / 2;
 }
 
 /**

@@ -271,6 +271,74 @@ describe('arrays built from nested data', () => {
 });
 
 describe('numerical robustness', () => {
+  test('median of two huge values does not overflow to Infinity', () => {
+    // (a + b) / 2 overflows once the pair sums past Number.MAX_VALUE, even
+    // though the median itself is perfectly representable.
+    const da = new DataArray([Number.MAX_VALUE, Number.MAX_VALUE], {
+      dims: ['x'],
+      coords: { x: [0, 1] }
+    });
+    expect(da.median()).toBe(Number.MAX_VALUE);
+
+    const asymmetric = new DataArray([1e308, 1.5e308], { dims: ['x'], coords: { x: [0, 1] } });
+    expect(asymmetric.median()).toBe(1.25e308);
+
+    const negative = new DataArray([-Number.MAX_VALUE, -Number.MAX_VALUE], {
+      dims: ['x'],
+      coords: { x: [0, 1] }
+    });
+    expect(negative.median()).toBe(-Number.MAX_VALUE);
+  });
+
+  test('the overflow-safe midpoint keeps ordinary medians exact', () => {
+    // Halving before adding must not cost precision on normal-magnitude data.
+    const da = new DataArray([1, 2, 3, 4], { dims: ['x'], coords: { x: [0, 1, 2, 3] } });
+    expect(da.median()).toBe(2.5);
+
+    const decimals = new DataArray([0.1, 0.30000000000000004], {
+      dims: ['x'],
+      coords: { x: [0, 1] }
+    });
+    expect(decimals.median()).toBeCloseTo(0.2, 15);
+  });
+
+  test('a large flat array reduces without a per-element stack', () => {
+    // The traversal keeps one frame per level of nesting rather than pushing
+    // every child, so extra space is O(depth), not O(n).
+    //
+    // Asserted by correctness at a size where the old per-element stack was
+    // measurably costly (3M elements held ~66 MB of references, vs ~4 MB now).
+    // A heap-delta assertion would be too GC-dependent to trust in a parallel
+    // suite, so this pins behaviour and leaves the memory claim to the comment.
+    const n = 1_000_000;
+    const values = Array.from({ length: n }, (_, i) => i);
+    const da = new DataArray(values, { dims: ['x'], coords: { x: values } });
+
+    expect(da.min()).toBe(0);
+    expect(da.max()).toBe(n - 1);
+    expect(da.mean()).toBeCloseTo((n - 1) / 2, 6);
+  });
+
+  test('deeply nested arrays still reduce correctly', () => {
+    // Frame-based traversal must handle nesting, not just the flat case.
+    const da = new DataArray(
+      [
+        [
+          [1, 2],
+          [3, 4]
+        ],
+        [
+          [5, 6],
+          [7, 8]
+        ]
+      ],
+      { dims: ['z', 'y', 'x'], coords: { z: [0, 1], y: [0, 1], x: [0, 1] } }
+    );
+    expect(da.min()).toBe(1);
+    expect(da.max()).toBe(8);
+    expect(da.median()).toBe(4.5);
+  });
+
   test('std stays accurate for values with a large offset', () => {
     // Kelvin temperatures: the naive E[x^2] - E[x]^2 form subtracts two nearly
     // equal ~85000 magnitudes and loses most of its precision. Welford does not.
