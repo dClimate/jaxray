@@ -344,7 +344,36 @@ console.log(average); // 22.2
 // Sum along a dimension
 const rowSums = gridData.sum('x');
 console.log(rowSums.data); // [6, 15]
+
+// Extremes, spread and median — whole-array or along a dimension
+console.log(temperatures.min(), temperatures.max());
+console.log(temperatures.median());
+console.log(temperatures.std()); // population std (ddof=0), as in xarray
+
+const rowMaxima = gridData.max('x');
+console.log(rowMaxima.data); // [3, 6]
 ```
+
+`mean`, `min`, `max`, `std` and `median` skip masked and non-numeric values,
+matching xarray's `skipna` default — so `where()`-masked cells are excluded from
+both the value and the denominator. A slice with no numeric values reduces to
+`NaN` rather than to `0` or `Infinity`:
+
+```typescript
+const masked = temperatures.where(someCondition);
+masked.mean(); // averages only the unmasked values
+masked.max();  // NaN if every value is masked
+```
+
+> **`sum` is the exception.** It adds values with `+` rather than skipping
+> non-numeric ones, and an entirely masked slice sums to `0`, not `NaN` — so a
+> zero from `sum` may mean "no data" rather than "adds up to nothing". Use
+> `count()` alongside it, or check another aggregation, when that distinction
+> matters.
+
+> `median` holds the values it reduces in memory in order to sort them, so it
+> costs O(k) space in the length of the reduced dimension. The other
+> aggregations accumulate in constant space.
 
 ### Working with Datasets
 
@@ -670,6 +699,14 @@ new DataArray(data, options?)
 - `squeeze()`: Remove dimensions of size 1
 - `sum(dim?)`: Sum along dimension (or all values)
 - `mean(dim?)`: Mean along dimension (or all values)
+- `min(dim?)`: Minimum along dimension (or all values)
+- `max(dim?)`: Maximum along dimension (or all values)
+- `std(dim?)`: Population standard deviation, ddof=0 (or all values)
+- `median(dim?)`: Median along dimension (or all values)
+
+  `mean`, `min`, `max`, `std` and `median` skip masked/non-numeric values
+  (xarray `skipna` semantics) and return `NaN` when nothing numeric remains.
+  `sum` does not: it returns `0` for an all-masked slice.
 - `toObject()`: Convert to plain JavaScript object
 - `toJSON()`: Convert to JSON string
 

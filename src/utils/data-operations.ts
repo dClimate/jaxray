@@ -67,6 +67,120 @@ export function countAll(data: NDArray): number {
   return count;
 }
 
+/**
+ * Reduce every leaf of an N-dimensional array to a scalar, skipping masked and
+ * non-numeric leaves. Iterative (an explicit stack, like `sumAll`) so a deeply
+ * nested array can't blow the call stack. Returns NaN when nothing is numeric.
+ *
+ * `median` is the one operation that must retain the values it visits; the
+ * others accumulate in O(1) space.
+ */
+export function reduceAll(data: NDArray, operation: ReduceOperation): number {
+  const collected: number[] | null = operation === 'median' ? [] : null;
+  const std = operation === 'std' ? welfordStd() : null;
+  let sum = 0;
+  let count = 0;
+  let extreme = Number.NaN;
+  let seen = false;
+
+  // One frame per level of nesting, each holding a cursor into its array, so the
+  // stack stays O(depth). Pushing every child instead would hold a reference to
+  // each element at once — O(n) for the flat 1-D case that dominates in practice.
+  const frames: Array<{ array: any[]; index: number }> = [
+    { array: Array.isArray(data) ? data : [data], index: 0 }
+  ];
+
+  while (frames.length > 0) {
+    const frame = frames[frames.length - 1];
+    if (frame.index >= frame.array.length) {
+      frames.pop();
+      continue;
+    }
+
+    const current = frame.array[frame.index++];
+    if (Array.isArray(current)) {
+      frames.push({ array: current, index: 0 });
+      continue;
+    }
+
+    const numeric = toReducibleNumber(current);
+    if (numeric === undefined) continue;
+
+    if (collected) {
+      collected.push(numeric);
+    } else if (std) {
+      std.push(numeric);
+    } else if (!seen) {
+      extreme = numeric;
+    } else if (operation === 'min') {
+      if (numeric < extreme) extreme = numeric;
+    } else if (operation === 'max') {
+      if (numeric > extreme) extreme = numeric;
+    }
+
+    sum += numeric;
+    count++;
+    seen = true;
+  }
+
+  switch (operation) {
+    case 'sum':
+      return sum;
+    case 'mean':
+      return count === 0 ? Number.NaN : sum / count;
+    case 'median':
+      return medianOf(collected ?? []);
+    case 'std':
+      return std ? std.result() : Number.NaN;
+    default:
+      return seen ? extreme : Number.NaN;
+  }
+}
+
+/** Reduce row-major storage to a scalar, skipping masked and non-numeric values. */
+export function reduceFlat(data: FlatDataStorage, operation: ReduceOperation): number {
+  const collected: number[] | null = operation === 'median' ? [] : null;
+  const std = operation === 'std' ? welfordStd() : null;
+  let sum = 0;
+  let count = 0;
+  let extreme = Number.NaN;
+  let seen = false;
+
+  for (let index = 0; index < data.length; index++) {
+    const numeric = toReducibleNumber(data[index]);
+    if (numeric === undefined) continue;
+
+    if (collected) {
+      collected.push(numeric);
+    } else if (std) {
+      std.push(numeric);
+    } else if (!seen) {
+      extreme = numeric;
+    } else if (operation === 'min') {
+      if (numeric < extreme) extreme = numeric;
+    } else if (operation === 'max') {
+      if (numeric > extreme) extreme = numeric;
+    }
+
+    sum += numeric;
+    count++;
+    seen = true;
+  }
+
+  switch (operation) {
+    case 'sum':
+      return sum;
+    case 'mean':
+      return count === 0 ? Number.NaN : sum / count;
+    case 'median':
+      return medianOf(collected ?? []);
+    case 'std':
+      return std ? std.result() : Number.NaN;
+    default:
+      return seen ? extreme : Number.NaN;
+  }
+}
+
 /** Sum numeric values directly from row-major storage. */
 export function sumFlat(data: FlatDataStorage): number {
   let sum = 0;
@@ -87,6 +201,53 @@ export function countFlat(data: FlatDataStorage): number {
 }
 
 /**
+ * Reductions that skip masked/non-numeric leaves and return NaN for an
+ * all-masked slice, matching xarray's skipna default.
+ */
+export type ReduceOperation = 'sum' | 'mean' | 'min' | 'max' | 'std' | 'median';
+
+/**
+ * Median of the numeric values in `values`, or NaN when none are numeric.
+ * Sorts a copy: unlike the streaming reductions this needs every value at once,
+ * so callers pay O(k log k) time and O(k) space in the reduced extent.
+ */
+function medianOf(values: number[]): number {
+  if (values.length === 0) return Number.NaN;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  if (sorted.length % 2 !== 0) return sorted[mid];
+  // Halve before adding: `(a + b) / 2` overflows to Infinity when the pair sums
+  // past Number.MAX_VALUE, even though the median itself is finite.
+  return sorted[mid - 1] / 2 + sorted[mid] / 2;
+}
+
+/**
+ * Population standard deviation (ddof=0, as xarray defaults) via Welford's
+ * algorithm — one pass, and numerically stable for the large means climate
+ * fields carry (e.g. temperatures in Kelvin), where the textbook
+ * `E[x²] - E[x]²` form loses most of its significant digits.
+ */
+function welfordStd(): {
+  push: (value: number) => void;
+  result: () => number;
+} {
+  let count = 0;
+  let mean = 0;
+  let m2 = 0;
+  return {
+    push(value: number) {
+      count++;
+      const delta = value - mean;
+      mean += delta / count;
+      m2 += delta * (value - mean);
+    },
+    result() {
+      return count === 0 ? Number.NaN : Math.sqrt(m2 / count);
+    }
+  };
+}
+
+/**
  * Reduce one dimension of row-major storage without constructing the source's
  * nested representation. Reduction results remain flat until a consumer asks
  * the resulting DataArray for `.values`.
@@ -94,7 +255,7 @@ export function countFlat(data: FlatDataStorage): number {
 export function reduceFlatAlongDimension(
   source: FlatData,
   dimIndex: number,
-  operation: 'sum' | 'mean'
+  operation: ReduceOperation
 ): FlatData {
   const outputShape = source.shape.filter((_, index) => index !== dimIndex);
   const outputSize = outputShape.reduce((size, dimension) => size * dimension, 1);
@@ -116,6 +277,41 @@ export function reduceFlatAlongDimension(
       remainder = Math.floor(remainder / outputShape[outputDim]);
       sourceBaseOffset += index * sourceStrides[dim];
       outputDim--;
+    }
+
+    // min/max/std/median share the stride walk but not the running-sum
+    // accumulator, so they branch off before it.
+    if (operation !== 'sum' && operation !== 'mean') {
+      let extreme = Number.NaN;
+      let seen = false;
+      const std = operation === 'std' ? welfordStd() : null;
+      const collected: number[] | null = operation === 'median' ? [] : null;
+
+      for (let index = 0; index < source.shape[dimIndex]; index++) {
+        const value = source.data[sourceBaseOffset + index * sourceStrides[dimIndex]];
+        const numeric = toReducibleNumber(value);
+        if (numeric === undefined) continue;
+
+        if (collected) {
+          collected.push(numeric);
+        } else if (std) {
+          std.push(numeric);
+        } else if (!seen) {
+          extreme = numeric;
+        } else if (operation === 'min') {
+          if (numeric < extreme) extreme = numeric;
+        } else if (numeric > extreme) {
+          extreme = numeric;
+        }
+        seen = true;
+      }
+
+      output[outputOffset] =
+        collected ? medianOf(collected)
+        : std ? std.result()
+        : seen ? extreme
+        : Number.NaN;
+      continue;
     }
 
     const reducedDimensionIsEmpty = source.shape[dimIndex] === 0;
@@ -150,6 +346,45 @@ export function reduceFlatAlongDimension(
 /**
  * Compute the mean along a dimension, skipping non-numeric and NaN values.
  */
+/**
+ * Reduce one dimension of a nested array in place, without flattening the whole
+ * source first. Mirrors `meanAlongDimension` and exists for the same reason:
+ * arrays built from nested data have no row-major storage, and copying a large
+ * grid just to reduce it costs O(total elements) of extra memory.
+ *
+ * Skips masked and non-numeric leaves; an all-masked slice reduces to NaN.
+ */
+export function reduceOpAlongDimension(
+  data: NDArray,
+  dimIndex: number,
+  operation: ReduceOperation
+): NDArray {
+  if (!Array.isArray(data)) {
+    return Number.NaN as unknown as NDArray;
+  }
+
+  if (dimIndex > 0) {
+    return data.map(item => reduceOpAlongDimension(item as NDArray, dimIndex - 1, operation)) as NDArray;
+  }
+
+  const reduceAcrossFirstDimension = (values: any[]): any => {
+    if (values.length === 0) {
+      return Number.NaN;
+    }
+
+    // Still nested: recurse position-wise so the reduction lands on the leaves.
+    if (Array.isArray(values[0])) {
+      return values[0].map((_: any, index: number) =>
+        reduceAcrossFirstDimension(values.map(value => value[index]))
+      );
+    }
+
+    return reduceAll(values as NDArray, operation);
+  };
+
+  return reduceAcrossFirstDimension(data as any[]);
+}
+
 export function meanAlongDimension(data: NDArray, dimIndex: number): NDArray {
   if (!Array.isArray(data)) {
     return Number.NaN;

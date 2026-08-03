@@ -47,6 +47,10 @@ import {
   countFlat,
   meanAlongDimension,
   reduceFlatAlongDimension,
+  reduceAll,
+  reduceFlat,
+  reduceOpAlongDimension,
+  type ReduceOperation,
   elementWiseOp,
   reshapeSqueezed,
   selectAtDimension,
@@ -604,7 +608,8 @@ export class DataArray {
    * Reduce along a dimension
    */
   sum(dim?: DimensionName): DataArray | number {
-    if (!dim) {
+    // `dim === undefined`, not `!dim`: '' is a legal dimension name.
+    if (dim === undefined) {
       // Sum all values using iterative approach (no flatten needed)
       const flatData = this.flatData;
       return flatData ? sumFlat(flatData.data) : sumAll(this._block.materialize());
@@ -644,7 +649,8 @@ export class DataArray {
    * Mean along a dimension
    */
   mean(dim?: DimensionName): DataArray | number {
-    if (!dim) {
+    // `dim === undefined`, not `!dim`: '' is a legal dimension name.
+    if (dim === undefined) {
       const flatData = this.flatData;
       const data = flatData?.data;
       const sum = data ? sumFlat(data) : sumAll(this._block.materialize());
@@ -681,6 +687,87 @@ export class DataArray {
       attrs: this._attrs,
       name: this._name
     });
+  }
+
+  /**
+   * Shared body for the reductions that have no bespoke accumulator
+   * (min/max/std/median). `sum` and `mean` keep their own methods: both predate
+   * this helper and have fast paths worth preserving exactly as they are.
+   *
+   * Masked and non-numeric leaves are skipped, and an all-masked slice reduces
+   * to NaN — the same skipna contract `mean` follows.
+   */
+  private _reduceWith(operation: ReduceOperation, dim?: DimensionName): DataArray | number {
+    // `dim === undefined`, not `!dim`: '' is a legal dimension name, and treating
+    // it as "no dimension" would silently reduce the whole array instead.
+    if (dim === undefined) {
+      const flatData = this.flatData;
+      return flatData
+        ? reduceFlat(flatData.data, operation)
+        : reduceAll(this._block.materialize(), operation);
+    }
+
+    const dimIndex = this._getDimIndex(dim);
+    if (dimIndex === -1) {
+      throw new Error(`Dimension '${dim}' not found`);
+    }
+
+    // reduceFlatAlongDimension needs row-major storage. Without it (arrays built
+    // from nested data, and lazy blocks once computed) reduce the nested form
+    // directly rather than flattening a full copy of the source first.
+    const flatData = this.flatData;
+    const result = flatData
+      ? reduceFlatAlongDimension(flatData, dimIndex, operation)
+      : reduceOpAlongDimension(this._block.materialize(), dimIndex, operation);
+    const newDims = this._dims.filter((_, i) => i !== dimIndex);
+
+    if (newDims.length === 0) {
+      return flatData ? ((result as FlatData).data[0] as number) : (result as number);
+    }
+
+    const newCoords: Coordinates = {};
+    for (const d of newDims) {
+      newCoords[d] = this._coords[d];
+    }
+
+    return new DataArray(result, {
+      dims: newDims,
+      coords: newCoords,
+      attrs: this._attrs,
+      name: this._name
+    });
+  }
+
+  /**
+   * Minimum along a dimension, or of every value when `dim` is omitted.
+   */
+  min(dim?: DimensionName): DataArray | number {
+    return this._reduceWith('min', dim);
+  }
+
+  /**
+   * Maximum along a dimension, or of every value when `dim` is omitted.
+   */
+  max(dim?: DimensionName): DataArray | number {
+    return this._reduceWith('max', dim);
+  }
+
+  /**
+   * Population standard deviation (ddof=0, matching xarray's default) along a
+   * dimension, or of every value when `dim` is omitted.
+   */
+  std(dim?: DimensionName): DataArray | number {
+    return this._reduceWith('std', dim);
+  }
+
+  /**
+   * Median along a dimension, or of every value when `dim` is omitted.
+   *
+   * Unlike the other reductions this holds the reduced extent in memory to sort
+   * it, so it costs O(k) space in the length of the dimension being reduced.
+   */
+  median(dim?: DimensionName): DataArray | number {
+    return this._reduceWith('median', dim);
   }
 
   /**
