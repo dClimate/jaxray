@@ -178,6 +178,98 @@ describe('masked values are skipped (xarray skipna)', () => {
   });
 });
 
+describe("'' is a real dimension name, not an absent one", () => {
+  // `!dim` treats the empty string as "no dimension given" and reduces the whole
+  // array instead of the named one. Zarr stores can carry an unnamed dimension,
+  // so this is reachable rather than theoretical.
+  const grid3x2 = () =>
+    new DataArray(
+      [
+        [1, 2],
+        [3, 4],
+        [5, 6]
+      ],
+      { dims: ['', 'x'], coords: { '': [0, 1, 2], x: [0, 1] } }
+    );
+
+  test('reducing a dimension named "" collapses only that dimension', () => {
+    const reduced = grid3x2().min('') as DataArray;
+    expect(reduced.data).toEqual([1, 2]);
+    expect(reduced.dims).toEqual(['x']);
+
+    expect((grid3x2().max('') as DataArray).data).toEqual([5, 6]);
+    expect((grid3x2().median('') as DataArray).data).toEqual([3, 4]);
+  });
+
+  test('sum and mean honour it too', () => {
+    expect((grid3x2().sum('') as DataArray).data).toEqual([9, 12]);
+    expect((grid3x2().mean('') as DataArray).data).toEqual([3, 4]);
+  });
+
+  test('omitting the dimension still reduces everything', () => {
+    expect(grid3x2().min()).toBe(1);
+    expect(grid3x2().max()).toBe(6);
+  });
+});
+
+describe('arrays built from nested data', () => {
+  // These have no row-major storage, so the dimensional reductions take the
+  // nested path. It must agree with the flat one rather than being a
+  // second implementation that drifts.
+  const nested = () =>
+    new DataArray(
+      [
+        [1, 2, 3],
+        [4, 5, 6]
+      ],
+      { dims: ['y', 'x'], coords: { y: [0, 1], x: [0, 1, 2] } }
+    );
+
+  test('the nested path has no flat storage to reduce', () => {
+    expect(nested().flatData).toBeNull();
+  });
+
+  test('dimensional reductions match the flat path', () => {
+    expect((nested().min('x') as DataArray).data).toEqual([1, 4]);
+    expect((nested().max('x') as DataArray).data).toEqual([3, 6]);
+    expect((nested().median('x') as DataArray).data).toEqual([2, 5]);
+
+    expect((nested().min('y') as DataArray).data).toEqual([1, 2, 3]);
+    expect((nested().max('y') as DataArray).data).toEqual([4, 5, 6]);
+  });
+
+  test('reducing the only dimension of a nested 1D array yields a scalar', () => {
+    const da = new DataArray([3, 1, 2], { dims: ['x'], coords: { x: [0, 1, 2] } });
+    expect(da.flatData).toBeNull();
+    expect(da.min('x')).toBe(1);
+    expect(da.max('x')).toBe(3);
+    expect(da.median('x')).toBe(2);
+  });
+
+  test('masked cells are skipped on the nested path as well', () => {
+    const da = new DataArray(
+      [
+        [1, 2],
+        [3, 4]
+      ],
+      { dims: ['y', 'x'], coords: { y: [0, 1], x: [0, 1] } }
+    );
+    const cond = new DataArray(
+      [
+        [true, false],
+        [false, false]
+      ],
+      { dims: ['y', 'x'], coords: { y: [0, 1], x: [0, 1] } }
+    );
+
+    const reduced = da.where(cond).max('x') as DataArray;
+    const values = reduced.data as number[];
+    expect(values[0]).toBe(1);
+    // Row 1 is entirely masked: NaN, not 0 or -Infinity.
+    expect(Number.isNaN(values[1])).toBe(true);
+  });
+});
+
 describe('numerical robustness', () => {
   test('std stays accurate for values with a large offset', () => {
     // Kelvin temperatures: the naive E[x^2] - E[x]^2 form subtracts two nearly

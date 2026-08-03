@@ -49,6 +49,7 @@ import {
   reduceFlatAlongDimension,
   reduceAll,
   reduceFlat,
+  reduceOpAlongDimension,
   type ReduceOperation,
   elementWiseOp,
   reshapeSqueezed,
@@ -607,7 +608,8 @@ export class DataArray {
    * Reduce along a dimension
    */
   sum(dim?: DimensionName): DataArray | number {
-    if (!dim) {
+    // `dim === undefined`, not `!dim`: '' is a legal dimension name.
+    if (dim === undefined) {
       // Sum all values using iterative approach (no flatten needed)
       const flatData = this.flatData;
       return flatData ? sumFlat(flatData.data) : sumAll(this._block.materialize());
@@ -647,7 +649,8 @@ export class DataArray {
    * Mean along a dimension
    */
   mean(dim?: DimensionName): DataArray | number {
-    if (!dim) {
+    // `dim === undefined`, not `!dim`: '' is a legal dimension name.
+    if (dim === undefined) {
       const flatData = this.flatData;
       const data = flatData?.data;
       const sum = data ? sumFlat(data) : sumAll(this._block.materialize());
@@ -695,7 +698,9 @@ export class DataArray {
    * to NaN — the same skipna contract `mean` follows.
    */
   private _reduceWith(operation: ReduceOperation, dim?: DimensionName): DataArray | number {
-    if (!dim) {
+    // `dim === undefined`, not `!dim`: '' is a legal dimension name, and treating
+    // it as "no dimension" would silently reduce the whole array instead.
+    if (dim === undefined) {
       const flatData = this.flatData;
       return flatData
         ? reduceFlat(flatData.data, operation)
@@ -707,19 +712,17 @@ export class DataArray {
       throw new Error(`Dimension '${dim}' not found`);
     }
 
-    // reduceFlatAlongDimension needs row-major storage. A lazy block only has a
-    // nested representation, so materialize it and flatten into the same shape
-    // the eager path would already have had.
-    let flatData = this.flatData;
-    if (!flatData) {
-      const materialized = this._block.materialize();
-      flatData = { data: flatten(materialized), shape: getShape(materialized) };
-    }
-    const result = reduceFlatAlongDimension(flatData, dimIndex, operation);
+    // reduceFlatAlongDimension needs row-major storage. Without it (arrays built
+    // from nested data, and lazy blocks once computed) reduce the nested form
+    // directly rather than flattening a full copy of the source first.
+    const flatData = this.flatData;
+    const result = flatData
+      ? reduceFlatAlongDimension(flatData, dimIndex, operation)
+      : reduceOpAlongDimension(this._block.materialize(), dimIndex, operation);
     const newDims = this._dims.filter((_, i) => i !== dimIndex);
 
     if (newDims.length === 0) {
-      return result.data[0] as number;
+      return flatData ? ((result as FlatData).data[0] as number) : (result as number);
     }
 
     const newCoords: Coordinates = {};

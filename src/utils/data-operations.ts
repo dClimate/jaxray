@@ -333,6 +333,45 @@ export function reduceFlatAlongDimension(
 /**
  * Compute the mean along a dimension, skipping non-numeric and NaN values.
  */
+/**
+ * Reduce one dimension of a nested array in place, without flattening the whole
+ * source first. Mirrors `meanAlongDimension` and exists for the same reason:
+ * arrays built from nested data have no row-major storage, and copying a large
+ * grid just to reduce it costs O(total elements) of extra memory.
+ *
+ * Skips masked and non-numeric leaves; an all-masked slice reduces to NaN.
+ */
+export function reduceOpAlongDimension(
+  data: NDArray,
+  dimIndex: number,
+  operation: ReduceOperation
+): NDArray {
+  if (!Array.isArray(data)) {
+    return Number.NaN as unknown as NDArray;
+  }
+
+  if (dimIndex > 0) {
+    return data.map(item => reduceOpAlongDimension(item as NDArray, dimIndex - 1, operation)) as NDArray;
+  }
+
+  const reduceAcrossFirstDimension = (values: any[]): any => {
+    if (values.length === 0) {
+      return Number.NaN;
+    }
+
+    // Still nested: recurse position-wise so the reduction lands on the leaves.
+    if (Array.isArray(values[0])) {
+      return values[0].map((_: any, index: number) =>
+        reduceAcrossFirstDimension(values.map(value => value[index]))
+      );
+    }
+
+    return reduceAll(values as NDArray, operation);
+  };
+
+  return reduceAcrossFirstDimension(data as any[]);
+}
+
 export function meanAlongDimension(data: NDArray, dimIndex: number): NDArray {
   if (!Array.isArray(data)) {
     return Number.NaN;
