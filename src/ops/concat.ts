@@ -10,9 +10,11 @@ import {
   CoordinateValue,
   Coordinates,
   Attributes,
-  LazyIndexRange
+  LazyIndexRange,
+  FlatData
 } from '../types.js';
 import { deepClone } from '../utils.js';
+import { isFlatData, stitchFlatData } from '../core/data-block.js';
 
 export interface ConcatOptions {
   dim: DimensionName;
@@ -195,6 +197,19 @@ export function createConcatLoader(
  * Concatenate two NDArrays along a specific dimension
  */
 export function concatenateArrays(arr1: NDArray, arr2: NDArray, dimIndex: number): NDArray {
+  // Flat `{ data, shape }` payloads are what the zarr backend returns, and they
+  // are objects rather than arrays — without this branch they fall through to
+  // the scalar path below and come back as `[arr1, arr2]`, a two-element array
+  // of objects whose length is unrelated to the concatenated dimension. The
+  // declared shape stays correct, so the corruption only surfaces later when
+  // `compute()` builds a DataArray and the coords no longer match the data.
+  if (isFlatData(arr1) || isFlatData(arr2)) {
+    if (!isFlatData(arr1) || !isFlatData(arr2)) {
+      throw new Error('Cannot concatenate flat data with nested array data');
+    }
+    return concatenateFlatData(arr1, arr2, dimIndex) as unknown as NDArray;
+  }
+
   // Handle scalar case
   if (!Array.isArray(arr1)) {
     if (!Array.isArray(arr2)) {
@@ -224,4 +239,39 @@ export function concatenateArrays(arr1: NDArray, arr2: NDArray, dimIndex: number
     }
     return result as NDArray;
   }
+}
+
+/**
+ * Join two flat row-major payloads along `dimIndex`.
+ *
+ * Every dimension except the concatenated one must agree — the operands are
+ * slices of the same grid, so a mismatch means the caller built the ranges
+ * wrong and silently truncating would corrupt the result.
+ */
+function concatenateFlatData(first: FlatData, second: FlatData, dimIndex: number): FlatData {
+  if (first.shape.length !== second.shape.length) {
+    throw new Error(
+      `Cannot concatenate flat data with different rank: ${first.shape.length} vs ${second.shape.length}`
+    );
+  }
+  for (let dim = 0; dim < first.shape.length; dim++) {
+    if (dim !== dimIndex && first.shape[dim] !== second.shape[dim]) {
+      throw new Error(
+        `Cannot concatenate flat data: dimension ${dim} differs (${first.shape[dim]} vs ${second.shape[dim]})`
+      );
+    }
+  }
+
+  // stitchFlatData already implements the row-major gather used by lazy
+  // selection; describe each output index along the concat dimension as
+  // (which operand, which offset within it) and reuse it.
+  const locations: Array<{ sourceIndex: number; offset: number }> = [];
+  for (let offset = 0; offset < first.shape[dimIndex]; offset++) {
+    locations.push({ sourceIndex: 0, offset });
+  }
+  for (let offset = 0; offset < second.shape[dimIndex]; offset++) {
+    locations.push({ sourceIndex: 1, offset });
+  }
+
+  return stitchFlatData([first, second], locations, dimIndex);
 }

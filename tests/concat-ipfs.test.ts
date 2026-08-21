@@ -152,6 +152,86 @@ describe('Dataset Concatenation with IPFS Data', () => {
   }, 300000); // 5 minutes timeout for IPFS operations
 
   /**
+   * Test: a SINGLE read spanning both sources.
+   *
+   * The tests above query each side of the boundary separately, so every read
+   * is forwarded whole to one source and the merge path never runs. A range
+   * that straddles the seam is the case that actually exercises it — and the
+   * one that regressed: flat zarr payloads fell through concatenateArrays'
+   * scalar branch and came back as [first, second], so materializing failed
+   * with "Coordinate 'time' length (N) does not match dimension size (2)".
+   */
+  test('should materialize a single range straddling the boundary', async () => {
+    const ipfsElements = createIpfsElements(GATEWAY);
+
+    const finalizedStore = await ShardedStore.open(FINALIZED_CID, ipfsElements);
+    const finalizedDs = await Dataset.open_zarr(finalizedStore);
+
+    const nonFinalizedStore = await ShardedStore.open(NON_FINALIZED_CID, ipfsElements);
+    const nonFinalizedDs = await Dataset.open_zarr(nonFinalizedStore);
+
+    const finalizedTime = finalizedDs.coords.time as string[];
+    const nonFinalizedTime = nonFinalizedDs.coords.time as string[];
+
+    // concat keeps the first operand whole and appends the second, so the seam
+    // sits at finalizedTime.length. Straddle it: the last two finalized steps
+    // and the first two of what the second operand contributes.
+    // Dataset.concat appends the second operand WHOLE — it does not drop the
+    // overlap — so combined index `finalizedTime.length` is nonFinalizedTime[0].
+    expect(finalizedTime.length).toBeGreaterThanOrEqual(2);
+    expect(nonFinalizedTime.length).toBeGreaterThanOrEqual(2);
+
+    const nyLatRange = [40, 41];
+    const nyLonRange = [-75, -73];
+
+    const combined = finalizedDs.concat(nonFinalizedDs, { dim: 'time' });
+
+    const seamIndex = finalizedTime.length;
+    const straddleIndices = [seamIndex - 2, seamIndex - 1, seamIndex, seamIndex + 1];
+
+    const straddleSel = await combined.isel({ time: straddleIndices });
+    const spatialSel = await straddleSel.sel({
+      latitude: nyLatRange,
+      longitude: nyLonRange
+    });
+
+    // The regression threw here, when coords met the collapsed data.
+    const straddleData = await spatialSel.compute();
+    const straddleVar = straddleData.getVariable(combined.dataVars[0]);
+
+    // Every requested step survives — not silently truncated to the operand count.
+    expect(straddleVar.shape[0]).toBe(straddleIndices.length);
+    expect(straddleData.coords.time as string[]).toHaveLength(straddleIndices.length);
+
+    // Values must come from the right side of the seam. Compare each half
+    // against the source dataset it should have been routed to.
+    const finalizedTail = await (
+      await finalizedDs.isel({ time: [finalizedTime.length - 2, finalizedTime.length - 1] })
+    ).sel({ latitude: nyLatRange, longitude: nyLonRange });
+    const finalizedTailVar = (await finalizedTail.compute()).getVariable(combined.dataVars[0]);
+
+    const nonFinalizedHead = await (
+      await nonFinalizedDs.isel({ time: [0, 1] })
+    ).sel({ latitude: nyLatRange, longitude: nyLonRange });
+    const nonFinalizedHeadVar = (await nonFinalizedHead.compute()).getVariable(combined.dataVars[0]);
+
+    const straddleArray = straddleVar.data as number[][][];
+    const finalizedTailArray = finalizedTailVar.data as number[][][];
+    const nonFinalizedHeadArray = nonFinalizedHeadVar.data as number[][][];
+
+    for (let lat = 0; lat < straddleVar.shape[1]; lat++) {
+      for (let lon = 0; lon < straddleVar.shape[2]; lon++) {
+        // First two steps come from the finalized operand...
+        expect(straddleArray[0][lat][lon]).toBe(finalizedTailArray[0][lat][lon]);
+        expect(straddleArray[1][lat][lon]).toBe(finalizedTailArray[1][lat][lon]);
+        // ...the last two from the non-finalized one.
+        expect(straddleArray[2][lat][lon]).toBe(nonFinalizedHeadArray[0][lat][lon]);
+        expect(straddleArray[3][lat][lon]).toBe(nonFinalizedHeadArray[1][lat][lon]);
+      }
+    }
+  }, 300000); // 5 minutes timeout for IPFS operations
+
+  /**
    * Test: Verify concatenated data matches independent queries
    *
    * This ensures that querying the concatenated dataset produces the same
