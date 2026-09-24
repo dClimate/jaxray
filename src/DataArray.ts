@@ -19,7 +19,7 @@ import {
   StreamChunk,
   RollingOptions,
 } from './types.js';
-import { getShape, flatten, deepClone, cloneAttrs } from './utils.js';
+import { getShape, flatten, deepClone, cloneAttrs, minMax } from './utils.js';
 import {
   createEagerBlock,
   createTypedBlock,
@@ -429,8 +429,7 @@ export class DataArray {
     } else if (Array.isArray(dimSelection)) {
       // Array selection - get indices
       const indices = dimSelection.map(v => findCoordinateIndex(this._coords[chunkDim], v, { method, tolerance }, chunkDim, chunkDimAttrs));
-      startIdx = Math.min(...indices);
-      endIdx = Math.max(...indices);
+      ({ min: startIdx, max: endIdx } = minMax(indices));
     } else if (dimSelection && typeof dimSelection === 'object' && ('start' in dimSelection || 'stop' in dimSelection)) {
       // Slice selection
       const { start, stop } = dimSelection;
@@ -1217,11 +1216,13 @@ export class DataArray {
       return Math.round(value * factor) / factor;
     };
 
+    const lat = minMax(latValues);
+    const lon = minMax(lonValues);
     return {
-      latMin: round(Math.min(...latValues)),
-      latMax: round(Math.max(...latValues)),
-      lonMin: round(Math.min(...lonValues)),
-      lonMax: round(Math.max(...lonValues))
+      latMin: round(lat.min),
+      latMax: round(lat.max),
+      lonMin: round(lon.min),
+      lonMax: round(lon.max)
     };
   }
 

@@ -309,3 +309,24 @@ export function arraysEqual(a: any[], b: any[]): boolean {
 
   return true;
 }
+
+/**
+ * Min and max of a numeric array in one pass.
+ *
+ * Use this instead of `Math.min(...values)`: spreading passes every element as
+ * a call argument, and V8 throws "Maximum call stack size exceeded" past
+ * roughly 120k of them — about 14 years of an hourly time axis, which is an
+ * ordinary selection. Like Math.min/Math.max, an empty array yields
+ * { min: Infinity, max: -Infinity } and any NaN yields NaN.
+ */
+export function minMax(values: ArrayLike<number>): { min: number; max: number } {
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = 0; i < values.length; i++) {
+    const value = values[i];
+    if (Number.isNaN(value)) return { min: NaN, max: NaN };
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+  return { min, max };
+}

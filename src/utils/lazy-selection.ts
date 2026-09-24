@@ -17,7 +17,7 @@ import {
 import { findCoordinateIndex } from './coordinate-indexing.js';
 import { selectMultipleAtDimension } from './data-operations.js';
 import { isFlatData, selectFlatData, stitchFlatData } from '../core/data-block.js';
-import { reshapeFlat } from '../utils.js';
+import { minMax, reshapeFlat } from '../utils.js';
 
 const DISCRETE_FETCH_GAP = 16;
 
@@ -258,8 +258,7 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
       );
 
       // Keep the enclosing range as a fallback; the loader wrapper splits sparse requests below.
-      const minIdx = Math.min(...indices);
-      const maxIdx = Math.max(...indices);
+      const { min: minIdx, max: maxIdx } = minMax(indices);
       indexRanges[dim] = {
         start: minIdx,
         stop: maxIdx + 1
@@ -383,8 +382,9 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
 
       if (requested === undefined) {
         if (discreteSelectionDimensions.has(dim)) {
-          const rangeStart = Math.min(...mapping);
-          const rangeStop = Math.max(...mapping) + 1;
+          const bounds = minMax(mapping);
+          const rangeStart = bounds.min;
+          const rangeStop = bounds.max + 1;
           resolved[dim] = { start: rangeStart, stop: rangeStop };
           discreteSelectionOffsets[dim] = mapping.map(index => index - rangeStart);
           discreteFetchCandidates.push({
@@ -425,10 +425,11 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
 
       if (discreteSelectionDimensions.has(dim)) {
         const selectedMapping = mapping.slice(clampedStart, clampedStopIdx);
-        const resolvedStart = Math.min(...selectedMapping);
+        const bounds = minMax(selectedMapping);
+        const resolvedStart = bounds.min;
         resolved[dim] = {
           start: resolvedStart,
-          stop: Math.max(...selectedMapping) + 1
+          stop: bounds.max + 1
         };
         discreteSelectionOffsets[dim] = selectedMapping.map(index => index - resolvedStart);
         discreteFetchCandidates.push({
@@ -477,7 +478,8 @@ export function performLazySelection(params: LazySelectionParams): LazySelection
 
         // Check if offsets are already contiguous (no extraction needed)
         const isContiguous = offsets.every((v, i) => i === 0 || v === offsets[i - 1] + 1);
-        if (isContiguous && offsets.length === (Math.max(...offsets) - Math.min(...offsets) + 1)) continue;
+        const offsetBounds = minMax(offsets);
+        if (isContiguous && offsets.length === (offsetBounds.max - offsetBounds.min + 1)) continue;
 
         const droppedPrecedingDims = resultDims
           .slice(0, d)

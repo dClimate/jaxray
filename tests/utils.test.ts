@@ -10,7 +10,8 @@ import {
   getAtIndex,
   setAtIndex,
   deepClone,
-  arraysEqual
+  arraysEqual,
+  minMax
 } from '../src/utils';
 
 describe('getShape', () => {
@@ -262,5 +263,23 @@ describe('arraysEqual', () => {
 
   test('should return false when nested arrays differ in structure', () => {
     expect(arraysEqual([[1, 2], 3], [[1, 2], [3]])).toBe(false);
+  });
+});
+
+describe('minMax', () => {
+  test('matches Math.min/Math.max on ordinary input', () => {
+    expect(minMax([3, -1, 7, 0])).toEqual({ min: -1, max: 7 });
+    expect(minMax(new Float64Array([2.5, 1.5]))).toEqual({ min: 1.5, max: 2.5 });
+  });
+
+  test('keeps the Math.min/Math.max edge cases: empty and NaN', () => {
+    expect(minMax([])).toEqual({ min: Infinity, max: -Infinity });
+    expect(minMax([1, NaN, 2])).toEqual({ min: NaN, max: NaN });
+  });
+
+  test('handles arrays past the call-argument limit that break Math.min(...values)', () => {
+    const values = Array.from({ length: 1_000_000 }, (_, index) => index);
+    expect(() => Math.min(...values)).toThrow(RangeError);
+    expect(minMax(values)).toEqual({ min: 0, max: 999_999 });
   });
 });
